@@ -2,17 +2,17 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-import * as assert from 'assert';
-import { ResourceMap } from 'vs/base/common/map';
-import { join } from 'vs/base/common/path';
-import { URI } from 'vs/base/common/uri';
-import { ensureNoDisposablesAreLeakedInTestSuite } from 'vs/base/test/common/utils';
-import { Configuration, ConfigurationChangeEvent, ConfigurationModel, ConfigurationModelParser, mergeChanges } from 'vs/platform/configuration/common/configurationModels';
-import { IConfigurationRegistry, Extensions, ConfigurationScope } from 'vs/platform/configuration/common/configurationRegistry';
-import { NullLogService } from 'vs/platform/log/common/log';
-import { Registry } from 'vs/platform/registry/common/platform';
-import { WorkspaceFolder } from 'vs/platform/workspace/common/workspace';
-import { Workspace } from 'vs/platform/workspace/test/common/testWorkspace';
+import assert from 'assert';
+import { ResourceMap } from '../../../../base/common/map.js';
+import { join } from '../../../../base/common/path.js';
+import { URI } from '../../../../base/common/uri.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
+import { Configuration, ConfigurationChangeEvent, ConfigurationModel, ConfigurationModelParser, mergeChanges } from '../../common/configurationModels.js';
+import { IConfigurationRegistry, Extensions, ConfigurationScope, IConfigurationNode } from '../../common/configurationRegistry.js';
+import { NullLogService } from '../../../log/common/log.js';
+import { Registry } from '../../../registry/common/platform.js';
+import { WorkspaceFolder } from '../../../workspace/common/workspace.js';
+import { Workspace } from '../../../workspace/test/common/testWorkspace.js';
 
 suite('ConfigurationModelParser', () => {
 
@@ -99,6 +99,604 @@ suite('ConfigurationModelParser', () => {
 		assert.strictEqual(testObject.configurationModel.getValue('a.b.c'), undefined);
 	});
 
+	test('parse configuration model with __proto__ key does not cause prototype pollution', () => {
+		const testObject = new ConfigurationModelParser('', new NullLogService());
+
+		testObject.parse('{ "__proto__": { "editor.fontSize": 100 }, "excluded": true }', { exclude: ['excluded'] });
+
+		const raw = testObject.configurationModel.getValue('__proto__') as Record<string, unknown>;
+		assert.deepStrictEqual({
+			prototype: Object.getPrototypeOf(raw),
+			fontSize: raw['editor.fontSize'],
+			promotedFontSize: testObject.configurationModel.getValue('editor.fontSize'),
+			objectPrototypeFontSize: (Object.prototype as Record<string, unknown>)['editor.fontSize'],
+		}, {
+			prototype: Object.prototype,
+			fontSize: 100,
+			promotedFontSize: undefined,
+			objectPrototypeFontSize: undefined,
+		});
+	});
+
+	test('parse configuration model ignores inherited configuration schema fields', () => {
+		const testObject = new ConfigurationModelParser('', new NullLogService());
+
+		testObject.parse('{ "constructor": true, "toString": true }', { skipUnregistered: true });
+
+		assert.deepStrictEqual({
+			constructor: testObject.configurationModel.getValue('constructor'),
+			toString: testObject.configurationModel.getValue('toString'),
+		}, {
+			constructor: undefined,
+			toString: undefined,
+		});
+	});
+
+});
+
+suite('ConfigurationModelParser - Excluded Properties', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	const configurationRegistry = Registry.as<IConfigurationRegistry>(Extensions.Configuration);
+
+	let testConfigurationNodes: IConfigurationNode[] = [];
+
+	setup(() => reset());
+	teardown(() => reset());
+
+	function reset() {
+		if (testConfigurationNodes.length > 0) {
+			configurationRegistry.deregisterConfigurations(testConfigurationNodes);
+			testConfigurationNodes = [];
+		}
+	}
+
+	function registerTestConfiguration() {
+		const node = {
+			'id': 'ExcludedPropertiesTest',
+			'type': 'object',
+			'properties': {
+				'regularProperty': {
+					'type': 'string' as const,
+					'default': 'regular',
+					'restricted': false
+				},
+				'restrictedProperty': {
+					'type': 'string' as const,
+					'default': 'restricted',
+					'restricted': true
+				},
+				'excludedProperty': {
+					'type': 'string' as const,
+					'default': 'excluded',
+					'restricted': true,
+					'included': false
+				},
+				'excludedNonRestrictedProperty': {
+					'type': 'string' as const,
+					'default': 'excludedNonRestricted',
+					'restricted': false,
+					'included': false
+				}
+			}
+		};
+
+		configurationRegistry.registerConfiguration(node);
+		testConfigurationNodes.push(node);
+		return node;
+	}
+
+	test('should handle excluded restricted properties correctly', () => {
+		registerTestConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		const testData = {
+			'regularProperty': 'regularValue',
+			'restrictedProperty': 'restrictedValue',
+			'excludedProperty': 'excludedValue',
+			'excludedNonRestrictedProperty': 'excludedNonRestrictedValue'
+		};
+
+		testObject.parse(JSON.stringify(testData), { skipRestricted: true });
+
+		assert.strictEqual(testObject.configurationModel.getValue('regularProperty'), 'regularValue');
+		assert.strictEqual(testObject.configurationModel.getValue('restrictedProperty'), undefined);
+		assert.strictEqual(testObject.configurationModel.getValue('excludedProperty'), 'excludedValue');
+		assert.strictEqual(testObject.configurationModel.getValue('excludedNonRestrictedProperty'), 'excludedNonRestrictedValue');
+		assert.ok(testObject.restrictedConfigurations.includes('restrictedProperty'));
+		assert.ok(!testObject.restrictedConfigurations.includes('excludedProperty'));
+	});
+
+	test('should find excluded properties when checking for restricted settings', () => {
+		registerTestConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		const testData = {
+			'excludedProperty': 'excludedValue'
+		};
+
+		testObject.parse(JSON.stringify(testData));
+
+		assert.strictEqual(testObject.configurationModel.getValue('excludedProperty'), 'excludedValue');
+		assert.ok(!testObject.restrictedConfigurations.includes('excludedProperty'));
+	});
+
+	test('should handle override properties with excluded configurations', () => {
+		registerTestConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		const testData = {
+			'[typescript]': {
+				'regularProperty': 'overrideRegular',
+				'restrictedProperty': 'overrideRestricted',
+				'excludedProperty': 'overrideExcluded'
+			}
+		};
+
+		testObject.parse(JSON.stringify(testData), { skipRestricted: true });
+
+		const overrideConfig = testObject.configurationModel.override('typescript');
+		assert.strictEqual(overrideConfig.getValue('regularProperty'), 'overrideRegular');
+		assert.strictEqual(overrideConfig.getValue('restrictedProperty'), undefined);
+		assert.strictEqual(overrideConfig.getValue('excludedProperty'), 'overrideExcluded');
+	});
+
+	test('should handle scope filtering with excluded properties', () => {
+		const node = {
+			'id': 'ScopeExcludedTest',
+			'type': 'object',
+			'properties': {
+				'windowProperty': {
+					'type': 'string' as const,
+					'default': 'window',
+					'scope': ConfigurationScope.WINDOW
+				},
+				'applicationProperty': {
+					'type': 'string' as const,
+					'default': 'application',
+					'scope': ConfigurationScope.APPLICATION
+				},
+				'excludedApplicationProperty': {
+					'type': 'string' as const,
+					'default': 'excludedApplication',
+					'scope': ConfigurationScope.APPLICATION,
+					'included': false
+				}
+			}
+		};
+
+		configurationRegistry.registerConfiguration(node);
+		testConfigurationNodes.push(node);
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		const testData = {
+			'windowProperty': 'windowValue',
+			'applicationProperty': 'applicationValue',
+			'excludedApplicationProperty': 'excludedApplicationValue'
+		};
+
+		testObject.parse(JSON.stringify(testData), { scopes: [ConfigurationScope.WINDOW] });
+
+		assert.strictEqual(testObject.configurationModel.getValue('windowProperty'), 'windowValue');
+		assert.strictEqual(testObject.configurationModel.getValue('applicationProperty'), undefined);
+		assert.strictEqual(testObject.configurationModel.getValue('excludedApplicationProperty'), undefined);
+	});
+
+	test('filter should handle include/exclude options with excluded properties', () => {
+		registerTestConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		const testData = {
+			'regularProperty': 'regularValue',
+			'excludedProperty': 'excludedValue'
+		};
+
+		testObject.parse(JSON.stringify(testData), { include: ['excludedProperty'] });
+
+		assert.strictEqual(testObject.configurationModel.getValue('regularProperty'), 'regularValue');
+		assert.strictEqual(testObject.configurationModel.getValue('excludedProperty'), 'excludedValue');
+	});
+
+	test('should handle exclude options with excluded properties', () => {
+		registerTestConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		const testData = {
+			'regularProperty': 'regularValue',
+			'excludedProperty': 'excludedValue'
+		};
+
+		testObject.parse(JSON.stringify(testData), { exclude: ['regularProperty'] });
+
+		assert.strictEqual(testObject.configurationModel.getValue('regularProperty'), undefined);
+		assert.strictEqual(testObject.configurationModel.getValue('excludedProperty'), 'excludedValue');
+	});
+
+	test('should report hasExcludedProperties correctly when excluded properties are filtered', () => {
+		registerTestConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		const testData = {
+			'regularProperty': 'regularValue',
+			'restrictedProperty': 'restrictedValue',
+			'excludedProperty': 'excludedValue'
+		};
+
+		testObject.parse(JSON.stringify(testData), { skipRestricted: true });
+
+		const model = testObject.configurationModel;
+
+		assert.notStrictEqual(model.raw, undefined, 'Raw should be set when properties are excluded');
+	});
+
+	test('skipUnregistered should exclude unregistered properties', () => {
+		registerTestConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+
+		testObject.parse(JSON.stringify({
+			'unregisteredProperty': 'value3'
+		}), { skipUnregistered: true });
+
+		assert.strictEqual(testObject.configurationModel.getValue('unregisteredProperty'), undefined);
+	});
+
+	test('shouldInclude method works correctly with excluded properties for skipUnregistered', () => {
+		registerTestConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+
+		testObject.parse(JSON.stringify({
+			'regularProperty': 'value1',
+			'excludedProperty': 'value2',
+			'unregisteredProperty': 'value3'
+		}), { skipUnregistered: true });
+
+		assert.strictEqual(testObject.configurationModel.getValue('regularProperty'), 'value1');
+		assert.strictEqual(testObject.configurationModel.getValue('excludedProperty'), undefined);
+		assert.strictEqual(testObject.configurationModel.getValue('unregisteredProperty'), undefined);
+	});
+
+	test('excluded properties are found during property schema lookup', () => {
+		registerTestConfiguration();
+
+		const registry = Registry.as<IConfigurationRegistry>(Extensions.Configuration);
+
+		const excludedProperties = registry.getExcludedConfigurationProperties();
+		assert.ok(excludedProperties['excludedProperty'], 'Excluded property should be in excluded properties map');
+		assert.ok(excludedProperties['excludedNonRestrictedProperty'], 'Excluded non-restricted property should be in excluded properties map');
+
+		const regularProperties = registry.getConfigurationProperties();
+		assert.strictEqual(regularProperties['excludedProperty'], undefined, 'Excluded property should not be in regular properties map');
+		assert.strictEqual(regularProperties['excludedNonRestrictedProperty'], undefined, 'Excluded non-restricted property should not be in regular properties map');
+
+		assert.ok(regularProperties['regularProperty'], 'Regular property should be in regular properties map');
+		assert.ok(regularProperties['restrictedProperty'], 'Restricted property should be in regular properties map');
+	});
+
+	test('should correctly use shouldInclude with excluded properties for scope and unregistered filtering', () => {
+		registerTestConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		const testData = {
+			'regularProperty': 'regularValue',
+			'restrictedProperty': 'restrictedValue',
+			'excludedProperty': 'excludedValue',
+			'excludedNonRestrictedProperty': 'excludedNonRestrictedValue',
+			'unknownProperty': 'unknownValue'
+		};
+
+		testObject.parse(JSON.stringify(testData), { skipRestricted: true });
+
+		assert.strictEqual(testObject.configurationModel.getValue('regularProperty'), 'regularValue');
+		assert.strictEqual(testObject.configurationModel.getValue('restrictedProperty'), undefined);
+		assert.ok(testObject.restrictedConfigurations.includes('restrictedProperty'));
+		assert.strictEqual(testObject.configurationModel.getValue('excludedProperty'), 'excludedValue');
+		assert.ok(!testObject.restrictedConfigurations.includes('excludedProperty'));
+		assert.strictEqual(testObject.configurationModel.getValue('excludedNonRestrictedProperty'), 'excludedNonRestrictedValue');
+		assert.strictEqual(testObject.configurationModel.getValue('unknownProperty'), 'unknownValue');
+	});
+});
+
+suite('ConfigurationModelParser - Nested Restricted Properties', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	const configurationRegistry = Registry.as<IConfigurationRegistry>(Extensions.Configuration);
+	let testConfigurationNodes: IConfigurationNode[] = [];
+
+	setup(() => reset());
+	teardown(() => reset());
+
+	function reset() {
+		if (testConfigurationNodes.length > 0) {
+			configurationRegistry.deregisterConfigurations(testConfigurationNodes);
+			testConfigurationNodes = [];
+		}
+	}
+
+	function registerTerminalLikeConfiguration() {
+		const node: IConfigurationNode = {
+			'id': 'NestedRestrictedTest',
+			'type': 'object',
+			'properties': {
+				'terminal.integrated.allowInUntrustedWorkspace': {
+					'type': 'boolean' as const,
+					'default': false,
+					'restricted': true
+				},
+				'terminal.integrated.defaultProfile.windows': {
+					'type': ['string', 'null'],
+					'default': null,
+					'restricted': true
+				},
+				'terminal.integrated.profiles.windows': {
+					'type': 'object' as const,
+					'default': {},
+					'restricted': true
+				},
+				'terminal.integrated.env.osx': {
+					'type': 'object' as const,
+					'default': {}
+				},
+				'terminal.integrated.machineProfiles': {
+					'type': 'object' as const,
+					'default': {},
+					'scope': ConfigurationScope.MACHINE
+				},
+				'terminal.integrated.fontSize': {
+					'type': 'number' as const,
+					'default': 12,
+					'scope': ConfigurationScope.MACHINE
+				},
+				'terminal.integrated.cwd': {
+					'type': 'string' as const,
+					'default': ''
+				}
+			}
+		};
+		configurationRegistry.registerConfiguration(node);
+		testConfigurationNodes.push(node);
+		return node;
+	}
+
+	test('nested restricted settings are removed with skipRestricted, sibling remains', () => {
+		registerTerminalLikeConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		const testData = {
+			'terminal': {
+				'integrated': {
+					'allowInUntrustedWorkspace': true,
+					'profiles': {
+						'windows': {
+							'auto-poc': {
+								'path': 'powershell.exe',
+								'args': ['-Command', 'Start-Process calc.exe']
+							}
+						}
+					},
+					'defaultProfile': { 'windows': 'auto-poc' },
+					'cwd': '/safe'
+				}
+			}
+		};
+
+		testObject.parse(JSON.stringify(testData), { skipRestricted: true });
+
+		assert.strictEqual(testObject.configurationModel.getValue('terminal.integrated.allowInUntrustedWorkspace'), undefined);
+		assert.strictEqual(testObject.configurationModel.getValue('terminal.integrated.profiles.windows'), undefined);
+		assert.strictEqual(testObject.configurationModel.getValue('terminal.integrated.defaultProfile.windows'), undefined);
+		assert.strictEqual(testObject.configurationModel.getValue('terminal.integrated.cwd'), '/safe');
+		assert.deepStrictEqual(new Set(testObject.restrictedConfigurations), new Set([
+			'terminal.integrated.allowInUntrustedWorkspace',
+			'terminal.integrated.profiles.windows',
+			'terminal.integrated.defaultProfile.windows'
+		]));
+	});
+
+	test('nested restricted settings remain when trusted (no skipRestricted)', () => {
+		registerTerminalLikeConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		const testData = {
+			'terminal': {
+				'integrated': {
+					'allowInUntrustedWorkspace': true,
+					'cwd': '/safe'
+				}
+			}
+		};
+
+		testObject.parse(JSON.stringify(testData), { skipRestricted: false, scopes: [ConfigurationScope.WINDOW] });
+
+		assert.strictEqual(testObject.configurationModel.getValue('terminal.integrated.allowInUntrustedWorkspace'), true);
+		assert.strictEqual(testObject.configurationModel.getValue('terminal.integrated.cwd'), '/safe');
+		assert.ok(testObject.restrictedConfigurations.includes('terminal.integrated.allowInUntrustedWorkspace'));
+	});
+
+	test('dotted and nested forms produce identical filtered results', () => {
+		registerTerminalLikeConfiguration();
+
+		const dottedObject = new ConfigurationModelParser('dotted', new NullLogService());
+		dottedObject.parse(JSON.stringify({
+			'terminal.integrated.allowInUntrustedWorkspace': true,
+			'terminal.integrated.cwd': '/safe'
+		}), { skipRestricted: true });
+
+		const nestedObject = new ConfigurationModelParser('nested', new NullLogService());
+		nestedObject.parse(JSON.stringify({
+			'terminal': {
+				'integrated': {
+					'allowInUntrustedWorkspace': true,
+					'cwd': '/safe'
+				}
+			}
+		}), { skipRestricted: true });
+
+		assert.strictEqual(JSON.stringify(dottedObject.configurationModel.contents), JSON.stringify(nestedObject.configurationModel.contents));
+		assert.deepStrictEqual(new Set(dottedObject.restrictedConfigurations), new Set(nestedObject.restrictedConfigurations));
+	});
+
+	test('keys deeper than a registered restricted object setting are removed with skipRestricted', () => {
+		registerTerminalLikeConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		testObject.parse(JSON.stringify({
+			'terminal.integrated.profiles.windows.Pwn.path': 'cmd.exe',
+			'terminal.integrated.profiles.windows.Pwn2': { 'path': 'cmd.exe' },
+			'terminal': {
+				'integrated.profiles.windows.Pwn3.path': 'cmd.exe',
+				'integrated': { 'profiles': { 'windows.Pwn4': { 'path': 'cmd.exe' } } }
+			},
+			'[typescript]': { 'terminal.integrated.profiles.windows.Pwn5.path': 'cmd.exe' },
+			'terminal.integrated.cwd': '/safe'
+		}), { skipRestricted: true });
+
+		assert.strictEqual(testObject.configurationModel.getValue('terminal.integrated.profiles.windows'), undefined);
+		assert.strictEqual(testObject.configurationModel.getValue('terminal.integrated.cwd'), '/safe');
+		assert.strictEqual(testObject.configurationModel.overrides.length, 1);
+		assert.strictEqual(testObject.configurationModel.overrides[0].keys.length, 0);
+		assert.deepStrictEqual(new Set(testObject.restrictedConfigurations), new Set(['terminal.integrated.profiles.windows']));
+	});
+
+	test('keys deeper than a registered restricted object setting remain when trusted', () => {
+		registerTerminalLikeConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		testObject.parse(JSON.stringify({
+			'terminal.integrated.profiles.windows.Mine.path': 'cmd.exe'
+		}), { skipRestricted: false, scopes: [ConfigurationScope.WINDOW] });
+
+		assert.strictEqual(testObject.configurationModel.getValue('terminal.integrated.profiles.windows.Mine.path'), 'cmd.exe');
+	});
+
+	test('keys deeper than a registered non-restricted object setting remain with skipRestricted', () => {
+		registerTerminalLikeConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		testObject.parse(JSON.stringify({
+			'terminal.integrated.env.osx.MY_VAR': 'value'
+		}), { skipRestricted: true, scopes: [ConfigurationScope.WINDOW] });
+
+		assert.strictEqual(testObject.configurationModel.getValue('terminal.integrated.env.osx.MY_VAR'), 'value');
+		assert.deepStrictEqual(testObject.restrictedConfigurations, []);
+	});
+
+	test('keys deeper than a registered machine-scoped object setting respect scope filtering', () => {
+		registerTerminalLikeConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		testObject.parse(JSON.stringify({
+			'terminal.integrated.machineProfiles.a.path': 'x',
+			'terminal.integrated.cwd': '/safe'
+		}), { scopes: [ConfigurationScope.WINDOW] });
+
+		assert.strictEqual(testObject.configurationModel.getValue('terminal.integrated.machineProfiles'), undefined);
+		assert.strictEqual(testObject.configurationModel.getValue('terminal.integrated.cwd'), '/safe');
+	});
+
+	test('registered restricted descendant of an unregistered key under a non-restricted object is still removed', () => {
+		const node: IConfigurationNode = {
+			'id': 'RestrictedDescendantTest',
+			'type': 'object',
+			'properties': {
+				'descendant.parent': { 'type': 'object' as const, 'default': {} },
+				'descendant.parent.child.secret': { 'type': 'string' as const, 'default': '', 'restricted': true }
+			}
+		};
+		configurationRegistry.registerConfiguration(node);
+		testConfigurationNodes.push(node);
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		testObject.parse(JSON.stringify({ 'descendant.parent.child': { 'secret': 'x', 'other': 'y' } }), { skipRestricted: true });
+
+		assert.deepStrictEqual({ secret: testObject.configurationModel.getValue('descendant.parent.child.secret'), other: testObject.configurationModel.getValue('descendant.parent.child.other'), restricted: testObject.restrictedConfigurations }, { secret: undefined, other: 'y', restricted: ['descendant.parent.child.secret'] });
+	});
+
+	test('nested machine-scoped settings respect scope filtering', () => {
+		registerTerminalLikeConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		const testData = {
+			'terminal': {
+				'integrated': {
+					'fontSize': 20,
+					'cwd': '/safe'
+				}
+			}
+		};
+
+		testObject.parse(JSON.stringify(testData), { scopes: [ConfigurationScope.WINDOW] });
+
+		assert.strictEqual(testObject.configurationModel.getValue('terminal.integrated.fontSize'), undefined);
+		assert.strictEqual(testObject.configurationModel.getValue('terminal.integrated.cwd'), '/safe');
+	});
+
+	test('nested restricted settings inside language override blocks are filtered', () => {
+		registerTerminalLikeConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		const testData = {
+			'[typescript]': {
+				'terminal': {
+					'integrated': {
+						'allowInUntrustedWorkspace': true,
+						'cwd': '/safe'
+					}
+				}
+			}
+		};
+
+		testObject.parse(JSON.stringify(testData), { skipRestricted: true });
+
+		const overrideConfig = testObject.configurationModel.override('typescript');
+		assert.strictEqual(overrideConfig.getValue('terminal.integrated.allowInUntrustedWorkspace'), undefined);
+		assert.strictEqual(overrideConfig.getValue('terminal.integrated.cwd'), '/safe');
+	});
+
+	test('partial nested exclusion reports hasExcludedProperties and preserves unfiltered raw', () => {
+		registerTerminalLikeConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		const testData = {
+			'terminal': {
+				'integrated': {
+					'allowInUntrustedWorkspace': true,
+					'cwd': '/safe'
+				}
+			}
+		};
+
+		testObject.parse(JSON.stringify(testData), { skipRestricted: true });
+
+		const model = testObject.configurationModel;
+		// The restricted nested setting is filtered out while a sibling remains, so the model must
+		// still flag that raw was filtered and retain the unfiltered raw for trust re-evaluation.
+		assert.notStrictEqual(model.raw, undefined);
+		assert.strictEqual(model.getValue('terminal.integrated.allowInUntrustedWorkspace'), undefined);
+		assert.strictEqual(model.rawConfiguration.getValue('terminal.integrated.allowInUntrustedWorkspace'), true);
+	});
+
+	test('nested object whose parent key is explicitly excluded is dropped entirely', () => {
+		registerTerminalLikeConfiguration();
+
+		const testObject = new ConfigurationModelParser('test', new NullLogService());
+		const testData = {
+			'terminal': {
+				'integrated': {
+					'cwd': '/safe'
+				}
+			}
+		};
+
+		testObject.parse(JSON.stringify(testData), { exclude: ['terminal'] });
+
+		const model = testObject.configurationModel;
+		assert.strictEqual(model.getValue('terminal.integrated.cwd'), undefined);
+		assert.notStrictEqual(model.raw, undefined);
+	});
 });
 
 suite('ConfigurationModel', () => {
@@ -128,11 +726,11 @@ suite('ConfigurationModel', () => {
 
 		testObject.setValue('b.c', 1);
 
-		const expected: any = {};
+		const expected: Record<string, unknown> = {};
 		expected['a'] = { 'b': 1 };
 		expected['f'] = 1;
 		expected['b'] = Object.create(null);
-		expected['b']['c'] = 1;
+		(expected['b'] as Record<string, unknown>)['c'] = 1;
 		assert.deepStrictEqual(testObject.contents, expected);
 		assert.deepStrictEqual(testObject.keys, ['a.b', 'f', 'b.c']);
 	});
@@ -243,7 +841,7 @@ suite('ConfigurationModel', () => {
 	test('get overriding configuration if the value of overriding identifier is not object', () => {
 		const testObject = new ConfigurationModel(
 			{ 'a': { 'b': 1 }, 'f': { 'g': 1 } }, [],
-			[{ identifiers: ['c'], contents: 'abc', keys: [] }], [], new NullLogService());
+			[{ identifiers: ['c'], contents: 'abc' as unknown as Record<string, unknown>, keys: [] }], [], new NullLogService());
 
 		assert.deepStrictEqual(testObject.override('c').contents, { 'a': { 'b': 1 }, 'f': { 'g': 1 } });
 	});
@@ -273,6 +871,89 @@ suite('ConfigurationModel', () => {
 		assert.deepStrictEqual(result.contents, { 'a': { 'b': 2 } });
 		assert.deepStrictEqual(result.getValue('a'), { 'b': 2 });
 		assert.deepStrictEqual(result.keys, ['a.b']);
+	});
+
+	test('merge does not recurse into inherited __proto__ of configuration contents', () => {
+		const base = new ConfigurationModel({ 'a': { 'b': 1 } }, ['a.b'], [], undefined, new NullLogService());
+		const add = new ConfigurationModel(JSON.parse('{ "a": { "__proto__": { "pollutedByMerge": true } } }'), ['a.__proto__'], [], undefined, new NullLogService());
+
+		try {
+			const result = base.merge(add);
+
+			assert.deepStrictEqual({
+				pollutedPrototype: (Object.prototype as Record<string, unknown>)['pollutedByMerge'],
+				pollutedObject: ({} as Record<string, unknown>)['pollutedByMerge'],
+				prototype: Object.getPrototypeOf(result.getValue('a')),
+				b: result.getValue('a.b'),
+			}, {
+				pollutedPrototype: undefined,
+				pollutedObject: undefined,
+				prototype: Object.prototype,
+				b: 1,
+			});
+		} finally {
+			delete (Object.prototype as Record<string, unknown>)['pollutedByMerge'];
+		}
+	});
+
+	test('merge does not pollute Object.prototype when overriding contents contain __proto__', () => {
+		const base = new ConfigurationModel({}, [], [{ identifiers: ['c'], contents: { 'a': { 'b': 1 } }, keys: ['a.b'] }], undefined, new NullLogService());
+		const add = new ConfigurationModel({}, [], [{ identifiers: ['c'], contents: JSON.parse('{ "a": { "__proto__": { "pollutedByOverrideMerge": true } } }'), keys: [] }], undefined, new NullLogService());
+
+		try {
+			const result = base.merge(add);
+
+			assert.deepStrictEqual({
+				pollutedPrototype: (Object.prototype as Record<string, unknown>)['pollutedByOverrideMerge'],
+				b: result.override('c').getValue('a.b'),
+			}, {
+				pollutedPrototype: undefined,
+				b: 1,
+			});
+		} finally {
+			delete (Object.prototype as Record<string, unknown>)['pollutedByOverrideMerge'];
+		}
+	});
+
+	test('chained merges with __proto__ contents do not pollute Object.prototype', () => {
+		const base = new ConfigurationModel({ 'a': { 'b': 1 } }, ['a.b'], [], undefined, new NullLogService());
+		const hostile = new ConfigurationModel(JSON.parse('{ "__proto__": { "pollutedByChain": { "v": true } }, "a": { "__proto__": { "pollutedByChainNested": true } } }'), [], [], undefined, new NullLogService());
+		const other = new ConfigurationModel({ 'c': 1 }, ['c'], [], undefined, new NullLogService());
+
+		try {
+			const result = base.merge(hostile).merge(other).merge(other);
+
+			assert.deepStrictEqual({
+				pollutedPrototype: (Object.prototype as Record<string, unknown>)['pollutedByChain'],
+				pollutedNestedPrototype: (Object.prototype as Record<string, unknown>)['pollutedByChainNested'],
+				b: result.getValue('a.b'),
+				c: result.getValue('c'),
+			}, {
+				pollutedPrototype: undefined,
+				pollutedNestedPrototype: undefined,
+				b: 1,
+				c: 1,
+			});
+		} finally {
+			delete (Object.prototype as Record<string, unknown>)['pollutedByChain'];
+			delete (Object.prototype as Record<string, unknown>)['pollutedByChainNested'];
+		}
+	});
+
+	test('override does not set prototype from __proto__ contents', () => {
+		const testObject = new ConfigurationModel(JSON.parse('{ "__proto__": { "inherited": 1 }, "a": 1 }'), [], [{ identifiers: ['c'], contents: { 'a': 2 }, keys: ['a'] }], undefined, new NullLogService());
+
+		const override = testObject.override('c');
+
+		assert.deepStrictEqual({
+			prototype: Object.getPrototypeOf(override.contents),
+			inherited: (override.contents as Record<string, unknown>)['inherited'],
+			a: override.getValue('a'),
+		}, {
+			prototype: Object.prototype,
+			inherited: undefined,
+			a: 2,
+		});
 	});
 
 	test('simple merge overrides', () => {
@@ -366,7 +1047,7 @@ suite('ConfigurationModel', () => {
 	});
 
 	test('inspect when raw is not same', () => {
-		const testObject = new ConfigurationModel({ 'a': 1, 'c': 1 }, ['a', 'c'], [{ identifiers: ['x', 'y'], contents: { 'a': 2, }, keys: ['a'] }], [{
+		const testObject = new ConfigurationModel({ 'a': 1, 'c': 1 }, ['a', 'c'], [{ identifiers: ['x', 'y'], contents: { 'a': 2, }, keys: ['a'] }], {
 			'a': 1,
 			'b': 2,
 			'c': 1,
@@ -375,7 +1056,7 @@ suite('ConfigurationModel', () => {
 				'a': 2,
 				'b': 1
 			}
-		}], new NullLogService());
+		}, new NullLogService());
 
 		assert.deepStrictEqual(testObject.inspect('a'), { value: 1, override: undefined, merged: 1, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
 		assert.deepStrictEqual(testObject.inspect('a', 'x'), { value: 1, override: 2, merged: 2, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
@@ -397,7 +1078,7 @@ suite('ConfigurationModel', () => {
 	});
 
 	test('inspect in merged configuration when raw is not same for one model', () => {
-		const target1 = new ConfigurationModel({ 'a': 1 }, ['a'], [{ identifiers: ['x', 'y'], contents: { 'a': 2, }, keys: ['a'] }], [{
+		const target1 = new ConfigurationModel({ 'a': 1 }, ['a'], [{ identifiers: ['x', 'y'], contents: { 'a': 2, }, keys: ['a'] }], {
 			'a': 1,
 			'b': 2,
 			'c': 3,
@@ -405,7 +1086,7 @@ suite('ConfigurationModel', () => {
 				'a': 2,
 				'b': 4,
 			}
-		}], new NullLogService());
+		}, new NullLogService());
 		const target2 = new ConfigurationModel({ 'b': 3 }, ['b'], [], undefined, new NullLogService());
 		const testObject = target1.merge(target2);
 
@@ -554,13 +1235,14 @@ export class TestConfiguration extends Configuration {
 		policyConfiguration: ConfigurationModel,
 		applicationConfiguration: ConfigurationModel,
 		localUserConfiguration: ConfigurationModel,
+		remoteUserConfiguration?: ConfigurationModel,
 	) {
 		super(
 			defaultConfiguration,
 			policyConfiguration,
 			applicationConfiguration,
 			localUserConfiguration,
-			ConfigurationModel.createEmptyModel(new NullLogService()),
+			remoteUserConfiguration ?? ConfigurationModel.createEmptyModel(new NullLogService()),
 			ConfigurationModel.createEmptyModel(new NullLogService()),
 			new ResourceMap<ConfigurationModel>(),
 			ConfigurationModel.createEmptyModel(new NullLogService()),
@@ -726,7 +1408,7 @@ suite('Configuration', () => {
 
 	});
 
-	function parseConfigurationModel(content: any): ConfigurationModel {
+	function parseConfigurationModel(content: Record<string, unknown>): ConfigurationModel {
 		const parser = new ConfigurationModelParser('test', new NullLogService());
 		parser.parse(JSON.stringify(content));
 		return parser.configurationModel;
@@ -1116,7 +1798,226 @@ suite('ConfigurationChangeEvent', () => {
 
 });
 
-function toConfigurationModel(obj: any): ConfigurationModel {
+suite('Configuration.Parse', () => {
+
+	const logService = new NullLogService();
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('parsing configuration only with local user configuration and raw is same', () => {
+		const configuration = new TestConfiguration(
+			ConfigurationModel.createEmptyModel(logService),
+			ConfigurationModel.createEmptyModel(logService),
+			ConfigurationModel.createEmptyModel(logService),
+			new ConfigurationModel({ 'a': 1, 'c': 1 }, ['a', 'c'], [{ identifiers: ['x', 'y'], contents: { 'a': 2, 'b': 1 }, keys: ['a'] }], undefined, logService)
+		);
+
+		const actual = Configuration.parse(configuration.toData(), logService);
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).userLocal, { value: 1, override: undefined, merged: 1, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).userLocal, { value: 1, override: 2, merged: 2, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'x' }, undefined).userLocal, { value: undefined, override: 1, merged: 1, overrides: [{ identifiers: ['x', 'y'], value: 1 }] });
+		assert.deepStrictEqual(actual.inspect('d', {}, undefined).userLocal, undefined);
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).userRemote, undefined);
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).userRemote, undefined);
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'x' }, undefined).userRemote, undefined);
+		assert.deepStrictEqual(actual.inspect('d', {}, undefined).userRemote, undefined);
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).user, { value: 1, override: undefined, merged: 1, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).user, { value: 1, override: 2, merged: 2, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'x' }, undefined).user, { value: undefined, override: 1, merged: 1, overrides: [{ identifiers: ['x', 'y'], value: 1 }] });
+		assert.deepStrictEqual(actual.inspect('d', {}, undefined).user, undefined);
+	});
+
+	test('parsing configuration only with local user configuration and raw is not same', () => {
+		const configuration = new TestConfiguration(
+			ConfigurationModel.createEmptyModel(logService),
+			ConfigurationModel.createEmptyModel(logService),
+			ConfigurationModel.createEmptyModel(logService),
+			new ConfigurationModel({ 'a': 1, 'c': 1 }, ['a', 'c'], [{ identifiers: ['x', 'y'], contents: { 'a': 2, }, keys: ['a'] }], {
+				'a': 1,
+				'b': 2,
+				'c': 1,
+				'd': 3,
+				'[x][y]': {
+					'a': 2,
+					'b': 1
+				}
+			}, logService)
+		);
+
+		const actual = Configuration.parse(configuration.toData(), logService);
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).userLocal, { value: 1, override: undefined, merged: 1, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).userLocal, { value: 1, override: 2, merged: 2, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'x' }, undefined).userLocal, { value: 2, override: 1, merged: 1, overrides: [{ identifiers: ['x', 'y'], value: 1 }] });
+		assert.deepStrictEqual(actual.inspect('d', {}, undefined).userLocal, { value: 3, override: undefined, merged: 3, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('e', {}, undefined).userLocal, undefined);
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).userRemote, undefined);
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).userRemote, undefined);
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'x' }, undefined).userRemote, undefined);
+		assert.deepStrictEqual(actual.inspect('d', {}, undefined).userRemote, undefined);
+		assert.deepStrictEqual(actual.inspect('e', {}, undefined).userRemote, undefined);
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).user, { value: 1, override: undefined, merged: 1, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).user, { value: 1, override: 2, merged: 2, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'x' }, undefined).user, { value: 2, override: 1, merged: 1, overrides: [{ identifiers: ['x', 'y'], value: 1 }] });
+		assert.deepStrictEqual(actual.inspect('d', {}, undefined).user, { value: 3, override: undefined, merged: 3, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('e', {}, undefined).user, undefined);
+	});
+
+	test('parsing configuration with local and remote user configuration and raw is same for both', () => {
+		const configuration = new TestConfiguration(
+			ConfigurationModel.createEmptyModel(logService),
+			ConfigurationModel.createEmptyModel(logService),
+			ConfigurationModel.createEmptyModel(logService),
+			new ConfigurationModel({ 'a': 1 }, ['a'], [{ identifiers: ['x', 'y'], contents: { 'a': 2, }, keys: ['a'] }], undefined, logService),
+			new ConfigurationModel({ 'b': 3 }, ['b'], [], undefined, logService)
+		);
+
+		const actual = Configuration.parse(configuration.toData(), logService);
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).userLocal, { value: 1, override: undefined, merged: 1, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).userLocal, { value: 1, override: 2, merged: 2, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('b', {}, undefined).userLocal, undefined);
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'y' }, undefined).userLocal, undefined);
+		assert.deepStrictEqual(actual.inspect('c', {}, undefined).userLocal, undefined);
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).userRemote, undefined);
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).userRemote, undefined);
+		assert.deepStrictEqual(actual.inspect('b', {}, undefined).userRemote, { value: 3, override: undefined, merged: 3, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'y' }, undefined).userRemote, { value: 3, override: undefined, merged: 3, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('c', {}, undefined).userRemote, undefined);
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).user, { value: 1, override: undefined, merged: 1, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).user, { value: 1, override: 2, merged: 2, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('b', {}, undefined).user, { value: 3, override: undefined, merged: 3, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'y' }, undefined).user, { value: 3, override: undefined, merged: 3, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('c', {}, undefined).user, undefined);
+	});
+
+	test('parsing configuration with local and remote user configuration and raw is not same for local user', () => {
+		const configuration = new TestConfiguration(
+			ConfigurationModel.createEmptyModel(logService),
+			ConfigurationModel.createEmptyModel(logService),
+			ConfigurationModel.createEmptyModel(logService),
+			new ConfigurationModel({ 'a': 1 }, ['a'], [{ identifiers: ['x', 'y'], contents: { 'a': 2, }, keys: ['a'] }], {
+				'a': 1,
+				'b': 2,
+				'c': 3,
+				'[x][y]': {
+					'a': 2,
+					'b': 4,
+				}
+			}, logService),
+			new ConfigurationModel({ 'b': 3 }, ['b'], [], undefined, logService)
+		);
+
+		const actual = Configuration.parse(configuration.toData(), logService);
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).userLocal, { value: 1, override: undefined, merged: 1, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).userLocal, { value: 1, override: 2, merged: 2, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('b', {}, undefined).userLocal, { value: 2, override: undefined, merged: 2, overrides: [{ identifiers: ['x', 'y'], value: 4 }] });
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'y' }, undefined).userLocal, { value: 2, override: 4, merged: 4, overrides: [{ identifiers: ['x', 'y'], value: 4 }] });
+		assert.deepStrictEqual(actual.inspect('c', {}, undefined).userLocal, { value: 3, override: undefined, merged: 3, overrides: undefined });
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).userRemote, undefined);
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).userRemote, undefined);
+		assert.deepStrictEqual(actual.inspect('b', {}, undefined).userRemote, { value: 3, override: undefined, merged: 3, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'y' }, undefined).userRemote, { value: 3, override: undefined, merged: 3, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('c', {}, undefined).userRemote, undefined);
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).user, { value: 1, override: undefined, merged: 1, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).user, { value: 1, override: 2, merged: 2, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('b', {}, undefined).user, { value: 3, merged: 3, override: undefined, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'y' }, undefined).user, { value: 3, override: undefined, merged: 3, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('c', {}, undefined).user, undefined);
+	});
+
+	test('parsing configuration with local and remote user configuration and raw is not same for remote user', () => {
+		const configuration = new TestConfiguration(
+			ConfigurationModel.createEmptyModel(logService),
+			ConfigurationModel.createEmptyModel(logService),
+			ConfigurationModel.createEmptyModel(logService),
+			new ConfigurationModel({ 'b': 3 }, ['b'], [], undefined, logService),
+			new ConfigurationModel({ 'a': 1 }, ['a'], [{ identifiers: ['x', 'y'], contents: { 'a': 2, }, keys: ['a'] }], {
+				'a': 1,
+				'b': 2,
+				'c': 3,
+				'[x][y]': {
+					'a': 2,
+					'b': 4,
+				}
+			}, logService),
+		);
+
+		const actual = Configuration.parse(configuration.toData(), logService);
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).userLocal, undefined);
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).userLocal, undefined);
+		assert.deepStrictEqual(actual.inspect('b', {}, undefined).userLocal, { value: 3, override: undefined, merged: 3, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'y' }, undefined).userLocal, { value: 3, override: undefined, merged: 3, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('c', {}, undefined).userLocal, undefined);
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).userRemote, { value: 1, override: undefined, merged: 1, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).userRemote, { value: 1, override: 2, merged: 2, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('b', {}, undefined).userRemote, { value: 2, override: undefined, merged: 2, overrides: [{ identifiers: ['x', 'y'], value: 4 }] });
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'y' }, undefined).userRemote, { value: 2, override: 4, merged: 4, overrides: [{ identifiers: ['x', 'y'], value: 4 }] });
+		assert.deepStrictEqual(actual.inspect('c', {}, undefined).userRemote, { value: 3, override: undefined, merged: 3, overrides: undefined });
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).user, { value: 1, override: undefined, merged: 1, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).user, { value: 1, override: 2, merged: 2, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('b', {}, undefined).user, { value: 3, override: undefined, merged: 3, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'y' }, undefined).user, { value: 3, override: undefined, merged: 3, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('c', {}, undefined).user, undefined);
+	});
+
+	test('parsing configuration with local and remote user configuration and raw is not same for both', () => {
+		const configuration = new TestConfiguration(
+			ConfigurationModel.createEmptyModel(logService),
+			ConfigurationModel.createEmptyModel(logService),
+			ConfigurationModel.createEmptyModel(logService),
+			new ConfigurationModel({ 'b': 3 }, ['b'], [], {
+				'a': 4,
+				'b': 3
+			}, logService),
+			new ConfigurationModel({ 'a': 1 }, ['a'], [{ identifiers: ['x', 'y'], contents: { 'a': 2, }, keys: ['a'] }], {
+				'a': 1,
+				'b': 2,
+				'c': 3,
+				'[x][y]': {
+					'a': 2,
+					'b': 4,
+				}
+			}, logService),
+		);
+
+		const actual = Configuration.parse(configuration.toData(), logService);
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).userLocal, { value: 4, override: undefined, merged: 4, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).userLocal, { value: 4, override: undefined, merged: 4, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('b', {}, undefined).userLocal, { value: 3, override: undefined, merged: 3, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'y' }, undefined).userLocal, { value: 3, override: undefined, merged: 3, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('c', {}, undefined).userLocal, undefined);
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).userRemote, { value: 1, override: undefined, merged: 1, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).userRemote, { value: 1, override: 2, merged: 2, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('b', {}, undefined).userRemote, { value: 2, override: undefined, merged: 2, overrides: [{ identifiers: ['x', 'y'], value: 4 }] });
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'y' }, undefined).userRemote, { value: 2, override: 4, merged: 4, overrides: [{ identifiers: ['x', 'y'], value: 4 }] });
+		assert.deepStrictEqual(actual.inspect('c', {}, undefined).userRemote, { value: 3, override: undefined, merged: 3, overrides: undefined });
+
+		assert.deepStrictEqual(actual.inspect('a', {}, undefined).user, { value: 1, override: undefined, merged: 1, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('a', { overrideIdentifier: 'x' }, undefined).user, { value: 1, override: 2, merged: 2, overrides: [{ identifiers: ['x', 'y'], value: 2 }] });
+		assert.deepStrictEqual(actual.inspect('b', {}, undefined).user, { value: 3, override: undefined, merged: 3, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('b', { overrideIdentifier: 'y' }, undefined).user, { value: 3, override: undefined, merged: 3, overrides: undefined });
+		assert.deepStrictEqual(actual.inspect('c', {}, undefined).user, undefined);
+	});
+
+
+});
+
+function toConfigurationModel(obj: Record<string, unknown>): ConfigurationModel {
 	const parser = new ConfigurationModelParser('test', new NullLogService());
 	parser.parse(JSON.stringify(obj));
 	return parser.configurationModel;

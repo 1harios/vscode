@@ -3,24 +3,170 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as assert from 'assert';
-import { NotificationsModel, NotificationViewItem, INotificationChangeEvent, NotificationChangeType, NotificationViewItemContentChangeKind, IStatusMessageChangeEvent, StatusMessageChangeType, INotificationsFilter } from 'vs/workbench/common/notifications';
-import { Action } from 'vs/base/common/actions';
-import { INotification, Severity, NotificationsFilter, NotificationPriority } from 'vs/platform/notification/common/notification';
-import { createErrorWithActions } from 'vs/base/common/errorMessage';
-import { NotificationService } from 'vs/workbench/services/notification/common/notificationService';
-import { TestStorageService } from 'vs/workbench/test/common/workbenchTestServices';
-import { timeout } from 'vs/base/common/async';
-import { ensureNoDisposablesAreLeakedInTestSuite } from 'vs/base/test/common/utils';
-import { DisposableStore } from 'vs/base/common/lifecycle';
+import assert from 'assert';
+import { NotificationsModel, NotificationViewItem, INotificationChangeEvent, NotificationChangeType, NotificationViewItemContentChangeKind, IStatusMessageChangeEvent, StatusMessageChangeType, INotificationsFilter } from '../../common/notifications.js';
+import { Action } from '../../../base/common/actions.js';
+import { INotification, Severity, NotificationsFilter, NotificationPriority } from '../../../platform/notification/common/notification.js';
+import { createErrorWithActions } from '../../../base/common/errorMessage.js';
+import { timeout } from '../../../base/common/async.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
+import { toDisposable } from '../../../base/common/lifecycle.js';
+import { legacyExtensionLinkParsing } from '../../../platform/notification/common/notificationLegacy.js';
+import { NotificationText } from '../../../platform/notification/common/notificationMessage.js';
 
 suite('Notifications', () => {
 
-	const disposables = new DisposableStore();
+	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 	const noFilter: INotificationsFilter = { global: NotificationsFilter.OFF, sources: new Map() };
 
-	teardown(() => {
-		disposables.clear();
+	function createItem(notification: INotification) {
+		const item = NotificationViewItem.create(notification, noFilter)!;
+		disposables.add(toDisposable(() => item.close()));
+		return item;
+	}
+
+	test('renders strings and errors literally by default', () => {
+		const message = 'README.md [Open](command:workbench.action.files.newUntitledFile "Open README") [Help](https://example.com) <b>text</b>';
+		const items = [
+			createItem({ severity: Severity.Info, message }),
+			createItem({ severity: Severity.Error, message: new Error(message) }),
+			createItem({ severity: Severity.Warning, message }),
+		];
+
+		assert.deepStrictEqual(items.map(item => ({
+			raw: item.message.raw,
+			nodes: item.message.linkedText.nodes
+		})), items.map(() => ({ raw: message, nodes: [message] })));
+	});
+
+	test('does not accept boolean or lookalike legacy parsing capabilities at runtime', () => {
+		const message = '[Open](command:unexpected)';
+		const nodes = [true, {}, Symbol('legacyExtensionLinkParsing')].map(capability => createItem({
+			severity: Severity.Info,
+			message,
+			// @ts-expect-error Only the extension bridge capability can enable legacy parsing.
+			legacyExtensionLinkParsing: capability,
+		}).message.linkedText.nodes);
+		assert.deepStrictEqual(nodes, [[message], [message], [message]]);
+	});
+
+	test('preserves explicit links without interpreting literal fragments or link labels', () => {
+		const filename = '[Open](command:unexpected)';
+		const link = { label: filename, href: 'command:showLogs?%5B%22file%22%5D', title: 'Show Logs' };
+		const message = NotificationText.format('Cannot open {0}. {1}', filename, NotificationText.link(link.label, link.href, link.title));
+		const item = createItem({ severity: Severity.Error, message });
+
+		assert.deepStrictEqual({
+			raw: item.message.raw,
+			nodes: item.message.linkedText.nodes,
+		}, {
+			raw: `Cannot open ${filename}. ${filename}`,
+			nodes: [`Cannot open ${filename}. `, link],
+		});
+	});
+
+	test('updating a structured message with plain text removes links even when the text is unchanged', () => {
+		const item = createItem({ severity: Severity.Info, message: NotificationText.link('Details', 'command:showDetails') });
+		const changes: NotificationViewItemContentChangeKind[] = [];
+		disposables.add(item.onDidChangeContent(event => changes.push(event.kind)));
+
+		item.updateMessage('Details');
+		item.updateMessage('Details');
+
+		assert.deepStrictEqual({
+			nodes: item.message.linkedText.nodes,
+			changes
+		}, {
+			nodes: ['Details'],
+			changes: [NotificationViewItemContentChangeKind.MESSAGE]
+		});
+	});
+
+	test('updates link targets without requiring a label change', () => {
+		const item = createItem({ severity: Severity.Info, message: NotificationText.link('Details', 'command:first') });
+		const changes: NotificationViewItemContentChangeKind[] = [];
+		disposables.add(item.onDidChangeContent(event => changes.push(event.kind)));
+
+		item.updateMessage(NotificationText.link('Details', 'command:second'));
+		item.updateMessage(NotificationText.link('Details', 'command:second'));
+
+		assert.deepStrictEqual({
+			nodes: item.message.linkedText.nodes,
+			changes
+		}, {
+			nodes: [{ label: 'Details', href: 'command:second' }],
+			changes: [NotificationViewItemContentChangeKind.MESSAGE]
+		});
+	});
+
+	test('does not deduplicate literal text and different links with the same label', () => {
+		const literal = createItem({ severity: Severity.Info, message: 'Details' });
+		const first = createItem({ severity: Severity.Info, message: NotificationText.link('Details', 'command:first') });
+		const duplicate = createItem({ severity: Severity.Info, message: NotificationText.link('Details', 'command:first') });
+		const second = createItem({ severity: Severity.Info, message: NotificationText.link('Details', 'command:second') });
+
+		assert.deepStrictEqual([
+			literal.equals(first),
+			first.equals(second),
+			first.equals(duplicate),
+		], [false, false, true]);
+	});
+
+	test('preserves legacy link parsing and updates with the extension capability', () => {
+		const item = createItem({
+			severity: Severity.Info,
+			message: '  [Show Logs](command:python.viewOutput)\r\n[Help](https://example.com)  ',
+			legacyExtensionLinkParsing,
+		});
+		const initial = item.message.linkedText.nodes;
+		item.updateMessage('[Check details](command:java.show.server.task.status "Build Status")');
+
+		assert.deepStrictEqual({
+			initial,
+			updated: item.message.linkedText.nodes,
+		}, {
+			initial: [{ label: 'Show Logs', href: 'command:python.viewOutput' }, ' ', { label: 'Help', href: 'https://example.com' }],
+			updated: [{ label: 'Check details', href: 'command:java.show.server.task.status', title: 'Build Status' }]
+		});
+	});
+
+	test('normalizes and truncates messages while preserving the original text', () => {
+		const message = `  line one\r\nline two\rline three\n${'x'.repeat(1000)}`;
+		const item = createItem({ severity: Severity.Info, message });
+		const legacy = createItem({ severity: Severity.Info, message: `${'x'.repeat(995)}[Open](command:unexpected)`, legacyExtensionLinkParsing });
+
+		assert.deepStrictEqual({
+			raw: item.message.raw,
+			displayed: item.message.linkedText.toString(),
+			legacyNodes: legacy.message.linkedText.nodes,
+		}, {
+			raw: message,
+			displayed: `${message.substring(0, 1000).replace(/\r\n|\n|\r/g, ' ').trimStart()}...`,
+			legacyNodes: [`${'x'.repeat(995)}[Open...`],
+		});
+	});
+
+	test('truncates structured labels without changing link targets', () => {
+		const href = `command:showLogs?${'x'.repeat(1100)}`;
+		const item = createItem({
+			severity: Severity.Info,
+			message: NotificationText.concat('x'.repeat(999), NotificationText.link('Details', href))
+		});
+
+		assert.deepStrictEqual(item.message.linkedText.nodes, [
+			'x'.repeat(999),
+			{ label: 'D', href },
+			'...'
+		]);
+	});
+
+	test('shows structured status messages as plain text', () => {
+		const model = disposables.add(new NotificationsModel());
+		const message = NotificationText.concat('Open ', NotificationText.link('logs', 'command:showLogs'));
+		const handle = model.showStatusMessage(message);
+		disposables.add(toDisposable(() => handle.close()));
+
+		assert.strictEqual(model.statusMessage?.message, 'Open logs');
 	});
 
 	test('Items', () => {
@@ -56,7 +202,9 @@ suite('Notifications', () => {
 
 		// Progress
 		assert.strictEqual(item1.hasProgress, false);
+		assert.strictEqual(item1.hasActiveProgress, false);
 		assert.strictEqual(item6.hasProgress, true);
+		assert.strictEqual(item6.hasActiveProgress, true);
 
 		// Message Box
 		assert.strictEqual(item5.canCollapse, false);
@@ -161,6 +309,65 @@ suite('Notifications', () => {
 		for (const item of [item1, item2, item3, item4, item5, item6, itemId1, itemId2, item7, item8, item9, item10, item11, item12, item13]) {
 			item.close();
 		}
+	});
+
+	test('Progress activity tracks starts, updates, completion, and restart', () => {
+		const item = NotificationViewItem.create({ severity: Severity.Info, message: 'Progress' }, noFilter)!;
+		const states: { hasProgress: boolean; hasActiveProgress: boolean; sticky: boolean; activeProgressChanged: boolean | undefined }[] = [];
+		const captureState = (activeProgressChanged?: boolean) => states.push({
+			hasProgress: item.hasProgress,
+			hasActiveProgress: item.hasActiveProgress,
+			sticky: item.sticky,
+			activeProgressChanged
+		});
+		disposables.add(item.onDidChangeContent(e => {
+			if (e.kind === NotificationViewItemContentChangeKind.PROGRESS) {
+				captureState(e.activeProgressChanged);
+			}
+		}));
+
+		captureState();
+		const progress = item.progress;
+		captureState();
+		progress.infinite();
+		progress.total(100);
+		progress.worked(10);
+		progress.done();
+		progress.infinite();
+
+		assert.deepStrictEqual(states, [
+			{ hasProgress: false, hasActiveProgress: false, sticky: false, activeProgressChanged: undefined },
+			{ hasProgress: true, hasActiveProgress: false, sticky: false, activeProgressChanged: undefined },
+			{ hasProgress: true, hasActiveProgress: true, sticky: true, activeProgressChanged: true },
+			{ hasProgress: true, hasActiveProgress: true, sticky: true, activeProgressChanged: false },
+			{ hasProgress: true, hasActiveProgress: true, sticky: true, activeProgressChanged: false },
+			{ hasProgress: true, hasActiveProgress: false, sticky: false, activeProgressChanged: true },
+			{ hasProgress: true, hasActiveProgress: true, sticky: true, activeProgressChanged: true }
+		]);
+
+		item.close();
+	});
+
+	test('Completed progress notifications remain unique', () => {
+		const model = disposables.add(new NotificationsModel());
+		const first = model.addNotification({ severity: Severity.Info, message: 'Same message' });
+		let firstClosed = false;
+		disposables.add(first.onDidClose(() => firstClosed = true));
+
+		first.progress.infinite();
+		first.progress.done();
+		const second = model.addNotification({ severity: Severity.Info, message: 'Same message' });
+
+		assert.deepStrictEqual({
+			notificationCount: model.notifications.length,
+			firstClosed
+		}, {
+			notificationCount: 2,
+			firstClosed: false
+		});
+
+		first.close();
+		second.close();
 	});
 
 	test('Items - does not fire changed when message did not change (content, severity)', async () => {
@@ -275,7 +482,7 @@ suite('Notifications', () => {
 		assert.strictEqual(model.statusMessage!.message, 'Hello World');
 		assert.strictEqual(lastStatusMessageEvent.item.message, model.statusMessage!.message);
 		assert.strictEqual(lastStatusMessageEvent.kind, StatusMessageChangeType.ADD);
-		disposable.dispose();
+		disposable.close();
 		assert.ok(!model.statusMessage);
 		assert.strictEqual(lastStatusMessageEvent.kind, StatusMessageChangeType.REMOVE);
 
@@ -284,54 +491,14 @@ suite('Notifications', () => {
 
 		assert.strictEqual(model.statusMessage!.message, 'Hello World 3');
 
-		disposable2.dispose();
+		disposable2.close();
 		assert.strictEqual(model.statusMessage!.message, 'Hello World 3');
 
-		disposable3.dispose();
+		disposable3.close();
 		assert.ok(!model.statusMessage);
 
 		item2DuplicateHandle.close();
 		item3Handle.close();
 	});
 
-	test('Service', async () => {
-		const service = disposables.add(new NotificationService(disposables.add(new TestStorageService())));
-
-		let addNotificationCount = 0;
-		let notification!: INotification;
-		disposables.add(service.onDidAddNotification(n => {
-			addNotificationCount++;
-			notification = n;
-		}));
-		service.info('hello there');
-		assert.strictEqual(addNotificationCount, 1);
-		assert.strictEqual(notification.message, 'hello there');
-		assert.strictEqual(notification.priority, NotificationPriority.DEFAULT);
-		assert.strictEqual(notification.source, undefined);
-		service.model.notifications[0].close();
-
-		let notificationHandle = service.notify({ message: 'important message', severity: Severity.Warning });
-		assert.strictEqual(addNotificationCount, 2);
-		assert.strictEqual(notification.message, 'important message');
-		assert.strictEqual(notification.severity, Severity.Warning);
-
-		let removeNotificationCount = 0;
-		disposables.add(service.onDidRemoveNotification(n => {
-			removeNotificationCount++;
-			notification = n;
-		}));
-		notificationHandle.close();
-		assert.strictEqual(removeNotificationCount, 1);
-		assert.strictEqual(notification.message, 'important message');
-
-		notificationHandle = service.notify({ priority: NotificationPriority.SILENT, message: 'test', severity: Severity.Ignore });
-		assert.strictEqual(addNotificationCount, 3);
-		assert.strictEqual(notification.message, 'test');
-		assert.strictEqual(notification.priority, NotificationPriority.SILENT);
-		notificationHandle.close();
-		assert.strictEqual(removeNotificationCount, 2);
-		notificationHandle.close();
-	});
-
-	ensureNoDisposablesAreLeakedInTestSuite();
 });

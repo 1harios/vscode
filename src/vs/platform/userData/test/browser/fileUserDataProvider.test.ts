@@ -3,26 +3,26 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as assert from 'assert';
-import { VSBuffer } from 'vs/base/common/buffer';
-import { CancellationToken } from 'vs/base/common/cancellation';
-import { Emitter, Event } from 'vs/base/common/event';
-import { Disposable, IDisposable } from 'vs/base/common/lifecycle';
-import { Schemas } from 'vs/base/common/network';
-import { dirname, isEqual, joinPath } from 'vs/base/common/resources';
-import { ReadableStreamEvents } from 'vs/base/common/stream';
-import { URI } from 'vs/base/common/uri';
-import { ensureNoDisposablesAreLeakedInTestSuite } from 'vs/base/test/common/utils';
-import { IEnvironmentService } from 'vs/platform/environment/common/environment';
-import { AbstractNativeEnvironmentService } from 'vs/platform/environment/common/environmentService';
-import { FileService } from 'vs/platform/files/common/fileService';
-import { FileChangeType, FileSystemProviderCapabilities, FileType, IFileChange, IFileOpenOptions, IFileReadStreamOptions, IFileService, IFileSystemProviderWithFileReadStreamCapability, IFileSystemProviderWithFileReadWriteCapability, IFileSystemProviderWithOpenReadWriteCloseCapability, IStat } from 'vs/platform/files/common/files';
-import { InMemoryFileSystemProvider } from 'vs/platform/files/common/inMemoryFilesystemProvider';
-import { NullLogService } from 'vs/platform/log/common/log';
-import product from 'vs/platform/product/common/product';
-import { UriIdentityService } from 'vs/platform/uriIdentity/common/uriIdentityService';
-import { FileUserDataProvider } from 'vs/platform/userData/common/fileUserDataProvider';
-import { IUserDataProfilesService, UserDataProfilesService } from 'vs/platform/userDataProfile/common/userDataProfile';
+import assert from 'assert';
+import { VSBuffer } from '../../../../base/common/buffer.js';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
+import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
+import { Schemas } from '../../../../base/common/network.js';
+import { dirname, isEqual, joinPath } from '../../../../base/common/resources.js';
+import { ReadableStreamEvents } from '../../../../base/common/stream.js';
+import { URI } from '../../../../base/common/uri.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
+import { IEnvironmentService } from '../../../environment/common/environment.js';
+import { AbstractNativeEnvironmentService } from '../../../environment/common/environmentService.js';
+import { FileService } from '../../../files/common/fileService.js';
+import { FileChangeType, FileSystemProviderCapabilities, FileType, IFileChange, IFileOpenOptions, IFileReadStreamOptions, IFileService, IFileSystemProviderWithFileReadStreamCapability, IFileSystemProviderWithFileReadWriteCapability, IFileSystemProviderWithOpenReadWriteCloseCapability, IStat } from '../../../files/common/files.js';
+import { InMemoryFileSystemProvider } from '../../../files/common/inMemoryFilesystemProvider.js';
+import { NullLogService } from '../../../log/common/log.js';
+import product from '../../../product/common/product.js';
+import { UriIdentityService } from '../../../uriIdentity/common/uriIdentityService.js';
+import { FileUserDataProvider } from '../../common/fileUserDataProvider.js';
+import { IUserDataProfilesService, UserDataProfilesService } from '../../../userDataProfile/common/userDataProfile.js';
 
 const ROOT = URI.file('tests').with({ scheme: 'vscode-tests' });
 
@@ -68,6 +68,44 @@ suite('FileUserDataProvider', () => {
 	test('exists return false when file does not exist', async () => {
 		const exists = await testObject.exists(userDataProfilesService.defaultProfile.settingsResource);
 		assert.strictEqual(exists, false);
+	});
+
+	test('does not advertise or emulate atomic rename for unsupported backing providers', async () => {
+		assert.strictEqual(fileUserDataProvider.capabilities & FileSystemProviderCapabilities.FileAtomicRename, 0);
+		await assert.rejects(async () => fileUserDataProvider.renameFileAtomic(
+			joinPath(environmentService.userRoamingDataHome, 'source'),
+			joinPath(environmentService.userRoamingDataHome, 'target'),
+			{ overwrite: true }
+		), /Atomic rename not supported/);
+	});
+
+	test('forwards atomic rename with translated user-data URIs', async () => {
+		const nativeScheme = 'atomic-native-test';
+		const userScheme = 'atomic-user-data-test';
+		const nativeProvider = disposables.add(new class extends InMemoryFileSystemProvider {
+			renamed: string[] = [];
+			override get capabilities(): FileSystemProviderCapabilities {
+				return super.capabilities | FileSystemProviderCapabilities.FileAtomicRename;
+			}
+			async renameFileAtomic(from: URI, to: URI, options: { overwrite: boolean }): Promise<void> {
+				this.renamed = [from.scheme, to.scheme];
+				return super.rename(from, to, options);
+			}
+		}());
+		disposables.add(testObject.registerProvider(nativeScheme, nativeProvider));
+		const identityService = disposables.add(new UriIdentityService(testObject));
+		const wrapper = disposables.add(new FileUserDataProvider(nativeScheme, nativeProvider, userScheme, userDataProfilesService, identityService, new NullLogService()));
+		disposables.add(testObject.registerProvider(userScheme, wrapper));
+		const source = joinPath(ROOT.with({ scheme: userScheme }), 'source');
+		const target = joinPath(ROOT.with({ scheme: userScheme }), 'target');
+		await testObject.writeFile(source, VSBuffer.fromString('new'));
+		await testObject.writeFile(target, VSBuffer.fromString('old'));
+		await testObject.move(source, target, true, { atomic: true });
+		assert.deepStrictEqual({
+			renamed: nativeProvider.renamed,
+			content: (await testObject.readFile(target)).value.toString(),
+			sourceExists: await testObject.exists(source),
+		}, { renamed: [nativeScheme, nativeScheme], content: 'new', sourceExists: false });
 	});
 
 	test('read file throws error if not exist', async () => {

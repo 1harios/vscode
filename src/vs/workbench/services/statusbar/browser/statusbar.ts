@@ -3,13 +3,14 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
-import { DisposableStore, IDisposable } from 'vs/base/common/lifecycle';
-import { ThemeColor } from 'vs/base/common/themables';
-import { Command } from 'vs/editor/common/languages';
-import { IMarkdownString } from 'vs/base/common/htmlContent';
-import { ColorIdentifier } from 'vs/platform/theme/common/colorRegistry';
-import { IAuxiliaryStatusbarPart, IStatusbarEntryContainer } from 'vs/workbench/browser/parts/statusbar/statusbarPart';
+import { createDecorator, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
+import { ThemeColor } from '../../../../base/common/themables.js';
+import { Command } from '../../../../editor/common/languages.js';
+import { IMarkdownString } from '../../../../base/common/htmlContent.js';
+import { IManagedHoverTooltipHTMLElement, IManagedHoverTooltipMarkdownString } from '../../../../base/browser/ui/hover/hover.js';
+import { ColorIdentifier } from '../../../../platform/theme/common/colorRegistry.js';
+import { IAuxiliaryStatusbarPart, IStatusbarEntryContainer } from '../../../browser/parts/statusbar/statusbarPart.js';
 
 export const IStatusbarService = createDecorator<IStatusbarService>('statusbarService');
 
@@ -25,7 +26,7 @@ export interface IStatusbarService extends IStatusbarEntryContainer {
 	/**
 	 * Creates a new auxililary status bar part in the provided container.
 	 */
-	createAuxiliaryStatusbarPart(container: HTMLElement): IAuxiliaryStatusbarPart;
+	createAuxiliaryStatusbarPart(container: HTMLElement, instantiationService: IInstantiationService): IAuxiliaryStatusbarPart;
 
 	/**
 	 * Create a scoped status bar service that only operates on the provided
@@ -42,10 +43,14 @@ export const enum StatusbarAlignment {
 export interface IStatusbarEntryLocation {
 
 	/**
-	 * The identifier of another status bar entry to
-	 * position relative to.
+	 * The identifier and priority of another status bar
+	 * entry to position relative to. If the referenced
+	 * entry does not exist, the priority will be used.
 	 */
-	id: string;
+	location: {
+		id: string;
+		priority: number;
+	};
 
 	/**
 	 * The alignment of the status bar entry relative
@@ -64,7 +69,7 @@ export interface IStatusbarEntryLocation {
 export function isStatusbarEntryLocation(thing: unknown): thing is IStatusbarEntryLocation {
 	const candidate = thing as IStatusbarEntryLocation | undefined;
 
-	return typeof candidate?.id === 'string' && typeof candidate.alignment === 'number';
+	return typeof candidate?.location?.id === 'string' && typeof candidate.alignment === 'number';
 }
 
 export interface IStatusbarEntryPriority {
@@ -101,6 +106,11 @@ export const ShowTooltipCommand: Command = {
 	title: ''
 };
 
+export const ToggleTooltipCommand: Command = {
+	id: 'statusBar.entry.toggleTooltip',
+	title: ''
+};
+
 export interface IStatusbarStyleOverride {
 	readonly priority: number; // lower has higher priority
 	readonly foreground?: ColorIdentifier;
@@ -110,6 +120,21 @@ export interface IStatusbarStyleOverride {
 
 export type StatusbarEntryKind = 'standard' | 'warning' | 'error' | 'prominent' | 'remote' | 'offline';
 export const StatusbarEntryKinds: StatusbarEntryKind[] = ['standard', 'warning', 'error', 'prominent', 'remote', 'offline'];
+
+export type TooltipContent = string | IMarkdownString | HTMLElement | IManagedHoverTooltipMarkdownString | IManagedHoverTooltipHTMLElement;
+
+export interface ITooltipWithCommands {
+	readonly content: TooltipContent;
+	readonly commands: Command[];
+	/** Called only after the tooltip is displayed. */
+	readonly onDidShow?: () => void;
+}
+
+export function isTooltipWithCommands(thing: unknown): thing is ITooltipWithCommands {
+	const candidate = thing as ITooltipWithCommands | undefined;
+
+	return !!candidate?.content && Array.isArray(candidate?.commands);
+}
 
 /**
  * A declarative way of describing a status bar entry
@@ -141,9 +166,11 @@ export interface IStatusbarEntry {
 	readonly role?: string;
 
 	/**
-	 * An optional tooltip text to show when you hover over the entry
+	 * An optional tooltip text to show when you hover over the entry.
+	 *
+	 * Use `ITooltipWithCommands` to show a tooltip with commands in hover footer area.
 	 */
-	readonly tooltip?: string | IMarkdownString | HTMLElement;
+	readonly tooltip?: TooltipContent | ITooltipWithCommands;
 
 	/**
 	 * An optional color to use for the entry.
@@ -162,10 +189,10 @@ export interface IStatusbarEntry {
 	/**
 	 * An optional command to execute on click.
 	 *
-	 * Can use the special `ShowTooltipCommand` to
-	 * show the tooltip on click if provided.
+	 * Can use the special `ShowTooltipCommand` to show the tooltip on click,
+	 * or `ToggleTooltipCommand` to show and focus it or hide an already pinned tooltip.
 	 */
-	readonly command?: string | Command | typeof ShowTooltipCommand;
+	readonly command?: string | Command | typeof ShowTooltipCommand | typeof ToggleTooltipCommand;
 
 	/**
 	 * Whether to show a beak above the status bar entry.
@@ -174,9 +201,9 @@ export interface IStatusbarEntry {
 
 	/**
 	 * Will enable a spinning icon in front of the text to indicate progress. When `true` is
-	 * specified, `syncing` will be used.
+	 * specified, `loading` will be used.
 	 */
-	readonly showProgress?: boolean | 'syncing' | 'loading';
+	readonly showProgress?: boolean | 'loading' | 'syncing';
 
 	/**
 	 * The kind of status bar entry. This applies different colors to the entry.
@@ -188,6 +215,18 @@ export interface IStatusbarEntry {
 	 * the entry to new auxiliary windows opening.
 	 */
 	readonly showInAllWindows?: boolean;
+
+	/**
+	 * If provided, signals what extension is providing the status bar entry. This allows for
+	 * more actions to manage the extension from the status bar entry.
+	 */
+	readonly extensionId?: string;
+
+	/**
+	 * Allows to add content with custom rendering to the status bar entry.
+	 * If possible, use `text` instead.
+	*/
+	readonly content?: HTMLElement;
 }
 
 export interface IStatusbarEntryAccessor extends IDisposable {

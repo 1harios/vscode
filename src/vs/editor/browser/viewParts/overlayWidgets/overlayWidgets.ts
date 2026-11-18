@@ -3,15 +3,15 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import 'vs/css!./overlayWidgets';
-import { FastDomNode, createFastDomNode } from 'vs/base/browser/fastDomNode';
-import { IOverlayWidget, IOverlayWidgetPosition, IOverlayWidgetPositionCoordinates, OverlayWidgetPositionPreference } from 'vs/editor/browser/editorBrowser';
-import { PartFingerprint, PartFingerprints, ViewPart } from 'vs/editor/browser/view/viewPart';
-import { RenderingContext, RestrictedRenderingContext } from 'vs/editor/browser/view/renderingContext';
-import { ViewContext } from 'vs/editor/common/viewModel/viewContext';
-import * as viewEvents from 'vs/editor/common/viewEvents';
-import { EditorOption } from 'vs/editor/common/config/editorOptions';
-import * as dom from 'vs/base/browser/dom';
+import './overlayWidgets.css';
+import { FastDomNode, createFastDomNode } from '../../../../base/browser/fastDomNode.js';
+import { IOverlayWidget, IOverlayWidgetPosition, IOverlayWidgetPositionCoordinates, OverlayWidgetPositionPreference } from '../../editorBrowser.js';
+import { PartFingerprint, PartFingerprints, ViewPart } from '../../view/viewPart.js';
+import { RenderingContext, RestrictedRenderingContext } from '../../view/renderingContext.js';
+import { ViewContext } from '../../../common/viewModel/viewContext.js';
+import * as viewEvents from '../../../common/viewEvents.js';
+import { EditorOption } from '../../../common/config/editorOptions.js';
+import * as dom from '../../../../base/browser/dom.js';
 
 
 interface IWidgetData {
@@ -25,6 +25,11 @@ interface IWidgetMap {
 	[key: string]: IWidgetData;
 }
 
+/*
+ * This view part for rendering the overlay widgets, which are
+ * floating widgets positioned based on the editor's viewport,
+ * such as the find widget.
+ */
 export class ViewOverlayWidgets extends ViewPart {
 
 	private readonly _viewDomNode: FastDomNode<HTMLElement>;
@@ -64,6 +69,13 @@ export class ViewOverlayWidgets extends ViewPart {
 
 	public override dispose(): void {
 		super.dispose();
+		// Widgets outlive the view, so detach their dom nodes to not keep this view's DOM alive (#146841)
+		for (const widgetData of Object.values(this._widgets)) {
+			const domNode = widgetData.domNode.domNode;
+			if (domNode.parentElement === this._domNode.domNode || domNode.parentElement === this.overflowingOverlayWidgetsDomNode.domNode) {
+				domNode.remove();
+			}
+		}
 		this._widgets = {};
 	}
 
@@ -87,6 +99,12 @@ export class ViewOverlayWidgets extends ViewPart {
 
 	// ---- end view event handlers
 
+	private _widgetCanOverflow(widget: IOverlayWidget): boolean {
+		const options = this._context.configuration.options;
+		const allowOverflow = options.get(EditorOption.allowOverflow);
+		return (widget.allowEditorOverflow || false) && allowOverflow;
+	}
+
 	public addWidget(widget: IOverlayWidget): void {
 		const domNode = createFastDomNode(widget.getDomNode());
 
@@ -100,7 +118,7 @@ export class ViewOverlayWidgets extends ViewPart {
 		domNode.setPosition('absolute');
 		domNode.setAttribute('widgetId', widget.getId());
 
-		if (widget.allowEditorOverflow) {
+		if (this._widgetCanOverflow(widget)) {
 			this.overflowingOverlayWidgetsDomNode.appendChild(domNode);
 		} else {
 			this._domNode.appendChild(domNode);
@@ -113,7 +131,7 @@ export class ViewOverlayWidgets extends ViewPart {
 	public setWidgetPosition(widget: IOverlayWidget, position: IOverlayWidgetPosition | null): boolean {
 		const widgetData = this._widgets[widget.getId()];
 		const preference = position ? position.preference : null;
-		const stack = position?.stackOridinal;
+		const stack = position?.stackOrdinal;
 		if (widgetData.preference === preference && widgetData.stack === stack) {
 			this._updateMaxMinWidth();
 			return false;
@@ -188,7 +206,7 @@ export class ViewOverlayWidgets extends ViewPart {
 		} else {
 			const { top, left } = widgetData.preference;
 			const fixedOverflowWidgets = this._context.configuration.options.get(EditorOption.fixedOverflowWidgets);
-			if (fixedOverflowWidgets && widgetData.widget.allowEditorOverflow) {
+			if (fixedOverflowWidgets && this._widgetCanOverflow(widgetData.widget)) {
 				// top, left are computed relative to the editor and we need them relative to the page
 				const editorBoundingBox = this._viewDomNodeRect;
 				domNode.setTop(top + editorBoundingBox.top);

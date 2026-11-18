@@ -3,23 +3,23 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as assert from 'assert';
-import { VSBuffer } from 'vs/base/common/buffer';
-import { Event } from 'vs/base/common/event';
-import { Schemas } from 'vs/base/common/network';
-import { URI } from 'vs/base/common/uri';
-import { runWithFakedTimers } from 'vs/base/test/common/timeTravelScheduler';
-import { ensureNoDisposablesAreLeakedInTestSuite } from 'vs/base/test/common/utils';
-import { ConfigurationTarget, isConfigured } from 'vs/platform/configuration/common/configuration';
-import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from 'vs/platform/configuration/common/configurationRegistry';
-import { ConfigurationService } from 'vs/platform/configuration/common/configurationService';
-import { IFileService } from 'vs/platform/files/common/files';
-import { FileService } from 'vs/platform/files/common/fileService';
-import { InMemoryFileSystemProvider } from 'vs/platform/files/common/inMemoryFilesystemProvider';
-import { NullLogService } from 'vs/platform/log/common/log';
-import { FilePolicyService } from 'vs/platform/policy/common/filePolicyService';
-import { NullPolicyService } from 'vs/platform/policy/common/policy';
-import { Registry } from 'vs/platform/registry/common/platform';
+import assert from 'assert';
+import { VSBuffer } from '../../../../base/common/buffer.js';
+import { Event } from '../../../../base/common/event.js';
+import { Schemas } from '../../../../base/common/network.js';
+import { URI } from '../../../../base/common/uri.js';
+import { runWithFakedTimers } from '../../../../base/test/common/timeTravelScheduler.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
+import { ConfigurationTarget, isConfigured } from '../../common/configuration.js';
+import { Extensions as ConfigurationExtensions, IConfigurationNode, IConfigurationRegistry } from '../../common/configurationRegistry.js';
+import { ConfigurationService } from '../../common/configurationService.js';
+import { IFileService } from '../../../files/common/files.js';
+import { createInMemoryFileService } from '../../../files/test/common/inMemoryFileService.js';
+import { NullLogService } from '../../../log/common/log.js';
+import { FilePolicyService } from '../../../policy/common/filePolicyService.js';
+import { NullPolicyService } from '../../../policy/common/policy.js';
+import { Registry } from '../../../registry/common/platform.js';
+import { PolicyCategory } from '../../../../base/common/policy.js';
 
 suite('ConfigurationService.test.ts', () => {
 
@@ -28,11 +28,18 @@ suite('ConfigurationService.test.ts', () => {
 	let fileService: IFileService;
 	let settingsResource: URI;
 
+	// Tests register settings in the global registry: deregister them, so that later test files do not see them.
+	const registry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration);
+	let registeredBefore: Set<IConfigurationNode>;
+
 	setup(async () => {
-		fileService = disposables.add(new FileService(new NullLogService()));
-		const diskFileSystemProvider = disposables.add(new InMemoryFileSystemProvider());
-		disposables.add(fileService.registerProvider(Schemas.file, diskFileSystemProvider));
+		registeredBefore = new Set(registry.getConfigurations());
+		fileService = createInMemoryFileService(disposables, Schemas.file);
 		settingsResource = URI.file('settings.json');
+	});
+
+	teardown(() => {
+		registry.deregisterConfigurations(registry.getConfigurations().filter(node => !registeredBefore.has(node)));
 	});
 
 	test('simple', () => runWithFakedTimers<void>({ useFakeTimers: true }, async () => {
@@ -359,7 +366,7 @@ suite('ConfigurationService.test.ts', () => {
 			await testObject.updateValue('configurationService.testSetting', 'value', ConfigurationTarget.WORKSPACE);
 			assert.fail('Should fail with error');
 		} catch (e) {
-			// succeess
+			// success
 		}
 	});
 
@@ -374,7 +381,9 @@ suite('ConfigurationService.test.ts', () => {
 					'default': 'isSet',
 					policy: {
 						name: 'configurationService.policySetting',
+						category: PolicyCategory.Extensions,
 						minimumVersion: '1.0.0',
+						localization: { description: { key: '', value: '' }, }
 					}
 				}
 			}
@@ -391,7 +400,7 @@ suite('ConfigurationService.test.ts', () => {
 			await testObject.updateValue('configurationService.policySetting', 'value');
 			assert.fail('Should throw error');
 		} catch (error) {
-			// succeess
+			// success
 		}
 	});
 });

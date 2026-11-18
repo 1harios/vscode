@@ -25,7 +25,7 @@ function getIPCHandlePath(id: string): string {
 }
 
 export interface IIPCHandler {
-	handle(request: any): Promise<any>;
+	handle(request: unknown): Promise<unknown>;
 }
 
 export async function createIPCServer(context?: string): Promise<IPCServer> {
@@ -120,6 +120,7 @@ export class IPCServer implements IIPCServer, ITerminalEnvironmentProvider, Disp
 		this.server.close();
 
 		if (this._ipcHandlePath && process.platform !== 'win32') {
+			// eslint-disable-next-line local/code-no-sync-fs -- Disposable.dispose has no awaited cleanup contract; an async unlink could be abandoned at host exit, leaving the socket file behind.
 			fs.unlinkSync(this._ipcHandlePath);
 		}
 	}

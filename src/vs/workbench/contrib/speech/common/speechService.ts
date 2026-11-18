@@ -3,14 +3,14 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { localize } from 'vs/nls';
-import { CancellationToken } from 'vs/base/common/cancellation';
-import { Event } from 'vs/base/common/event';
-import { IDisposable } from 'vs/base/common/lifecycle';
-import { RawContextKey } from 'vs/platform/contextkey/common/contextkey';
-import { ExtensionIdentifier } from 'vs/platform/extensions/common/extensions';
-import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
-import { language } from 'vs/base/common/platform';
+import { localize } from '../../../../nls.js';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { Event } from '../../../../base/common/event.js';
+import { IDisposable } from '../../../../base/common/lifecycle.js';
+import { RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { ExtensionIdentifier } from '../../../../platform/extensions/common/extensions.js';
+import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import { language } from '../../../../base/common/platform.js';
 
 export const ISpeechService = createDecorator<ISpeechService>('speechService');
 
@@ -88,6 +88,21 @@ export interface ISpeechProvider {
 	createKeywordRecognitionSession(token: CancellationToken): IKeywordRecognitionSession;
 }
 
+export interface IVoiceLiveSession {
+	readonly sessionId: string;
+	readonly sdp: string;
+}
+
+export interface IVoiceLiveSessionResult {
+	readonly available: boolean;
+	readonly session?: IVoiceLiveSession;
+}
+
+export interface IVoiceLiveSessionProvider {
+	readonly metadata: ISpeechProviderMetadata;
+	createVoiceLiveSession(sdp: string | undefined, token: CancellationToken): Promise<IVoiceLiveSessionResult | undefined>;
+}
+
 export interface ISpeechService {
 
 	readonly _serviceBrand: undefined;
@@ -97,6 +112,8 @@ export interface ISpeechService {
 	readonly hasSpeechProvider: boolean;
 
 	registerSpeechProvider(identifier: string, provider: ISpeechProvider): IDisposable;
+	registerVoiceLiveSessionProvider(identifier: string, provider: IVoiceLiveSessionProvider): IDisposable;
+	createVoiceLiveSession(identifier: string, extension: ExtensionIdentifier, sdp: string | undefined, token: CancellationToken): Promise<IVoiceLiveSessionResult | undefined>;
 
 	readonly onDidStartSpeechToTextSession: Event<void>;
 	readonly onDidEndSpeechToTextSession: Event<void>;
@@ -138,6 +155,7 @@ export const enum AccessibilityVoiceSettingId {
 	SpeechTimeout = 'accessibility.voice.speechTimeout',
 	AutoSynthesize = 'accessibility.voice.autoSynthesize',
 	SpeechLanguage = 'accessibility.voice.speechLanguage',
+	IgnoreCodeBlocks = 'accessibility.voice.ignoreCodeBlocks'
 }
 
 export const SPEECH_LANGUAGE_CONFIG = AccessibilityVoiceSettingId.SpeechLanguage;

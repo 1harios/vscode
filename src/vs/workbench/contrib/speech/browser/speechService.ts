@@ -3,20 +3,20 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { localize } from 'vs/nls';
-import { firstOrDefault } from 'vs/base/common/arrays';
-import { CancellationToken, CancellationTokenSource } from 'vs/base/common/cancellation';
-import { Emitter, Event } from 'vs/base/common/event';
-import { Disposable, DisposableStore, IDisposable, toDisposable } from 'vs/base/common/lifecycle';
-import { IContextKeyService } from 'vs/platform/contextkey/common/contextkey';
-import { ILogService } from 'vs/platform/log/common/log';
-import { IHostService } from 'vs/workbench/services/host/browser/host';
-import { DeferredPromise } from 'vs/base/common/async';
-import { ISpeechService, ISpeechProvider, HasSpeechProvider, ISpeechToTextSession, SpeechToTextInProgress, KeywordRecognitionStatus, SpeechToTextStatus, speechLanguageConfigToLanguage, SPEECH_LANGUAGE_CONFIG, ITextToSpeechSession, TextToSpeechInProgress, TextToSpeechStatus } from 'vs/workbench/contrib/speech/common/speechService';
-import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
-import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
-import { ExtensionsRegistry } from 'vs/workbench/services/extensions/common/extensionsRegistry';
-import { IExtensionService } from 'vs/workbench/services/extensions/common/extensions';
+import { localize } from '../../../../nls.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
+import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { IContextKey, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
+import { IHostService } from '../../../services/host/browser/host.js';
+import { DeferredPromise } from '../../../../base/common/async.js';
+import { ISpeechService, ISpeechProvider, HasSpeechProvider, ISpeechToTextSession, SpeechToTextInProgress, KeywordRecognitionStatus, SpeechToTextStatus, speechLanguageConfigToLanguage, SPEECH_LANGUAGE_CONFIG, ITextToSpeechSession, TextToSpeechInProgress, TextToSpeechStatus, IVoiceLiveSessionProvider, IVoiceLiveSessionResult } from '../common/speechService.js';
+import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { ExtensionsRegistry } from '../../../services/extensions/common/extensionsRegistry.js';
+import { IExtensionService } from '../../../services/extensions/common/extensions.js';
+import { ExtensionIdentifier } from '../../../../platform/extensions/common/extensions.js';
 
 export interface ISpeechProviderDescriptor {
 	readonly name: string;
@@ -57,19 +57,24 @@ export class SpeechService extends Disposable implements ISpeechService {
 	get hasSpeechProvider() { return this.providerDescriptors.size > 0 || this.providers.size > 0; }
 
 	private readonly providers = new Map<string, ISpeechProvider>();
+	private readonly voiceLiveSessionProviders = new Map<string, IVoiceLiveSessionProvider>();
 	private readonly providerDescriptors = new Map<string, ISpeechProviderDescriptor>();
 
-	private readonly hasSpeechProviderContext = HasSpeechProvider.bindTo(this.contextKeyService);
+	private readonly hasSpeechProviderContext: IContextKey<boolean>;
 
 	constructor(
 		@ILogService private readonly logService: ILogService,
-		@IContextKeyService private readonly contextKeyService: IContextKeyService,
+		@IContextKeyService contextKeyService: IContextKeyService,
 		@IHostService private readonly hostService: IHostService,
 		@ITelemetryService private readonly telemetryService: ITelemetryService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IExtensionService private readonly extensionService: IExtensionService
 	) {
 		super();
+
+		this.hasSpeechProviderContext = HasSpeechProvider.bindTo(contextKeyService);
+		this.textToSpeechInProgress = TextToSpeechInProgress.bindTo(contextKeyService);
+		this.speechToTextInProgress = SpeechToTextInProgress.bindTo(contextKeyService);
 
 		this.handleAndRegisterSpeechExtensions();
 	}
@@ -120,6 +125,29 @@ export class SpeechService extends Disposable implements ISpeechService {
 		});
 	}
 
+	registerVoiceLiveSessionProvider(identifier: string, provider: IVoiceLiveSessionProvider): IDisposable {
+		if (this.voiceLiveSessionProviders.has(identifier)) {
+			throw new Error(`Voice live session provider with identifier ${identifier} is already registered.`);
+		}
+
+		this.voiceLiveSessionProviders.set(identifier, provider);
+		return toDisposable(() => this.voiceLiveSessionProviders.delete(identifier));
+	}
+
+	async createVoiceLiveSession(identifier: string, extension: ExtensionIdentifier, sdp: string | undefined, token: CancellationToken): Promise<IVoiceLiveSessionResult | undefined> {
+		if (token.isCancellationRequested) {
+			return undefined;
+		}
+		await this.extensionService.activateByEvent('onSpeech');
+
+		const provider = this.voiceLiveSessionProviders.get(identifier);
+		if (token.isCancellationRequested || !provider || !ExtensionIdentifier.equals(provider.metadata.extension, extension)) {
+			return undefined;
+		}
+
+		return provider.createVoiceLiveSession(sdp, token);
+	}
+
 	private handleHasSpeechProviderChange(): void {
 		this.hasSpeechProviderContext.set(this.hasSpeechProvider);
 
@@ -137,7 +165,7 @@ export class SpeechService extends Disposable implements ISpeechService {
 	private activeSpeechToTextSessions = 0;
 	get hasActiveSpeechToTextSession() { return this.activeSpeechToTextSessions > 0; }
 
-	private readonly speechToTextInProgress = SpeechToTextInProgress.bindTo(this.contextKeyService);
+	private readonly speechToTextInProgress: IContextKey<boolean>;
 
 	async createSpeechToTextSession(token: CancellationToken, context: string = 'speech'): Promise<ISpeechToTextSession> {
 		const provider = await this.getProvider();
@@ -227,7 +255,7 @@ export class SpeechService extends Disposable implements ISpeechService {
 		// Send out extension activation to ensure providers can register
 		await this.extensionService.activateByEvent('onSpeech');
 
-		const provider = firstOrDefault(Array.from(this.providers.values()));
+		const provider = Array.from(this.providers.values()).at(0);
 		if (!provider) {
 			throw new Error(`No Speech provider is registered.`);
 		} else if (this.providers.size > 1) {
@@ -250,7 +278,7 @@ export class SpeechService extends Disposable implements ISpeechService {
 	private activeTextToSpeechSessions = 0;
 	get hasActiveTextToSpeechSession() { return this.activeTextToSpeechSessions > 0; }
 
-	private readonly textToSpeechInProgress = TextToSpeechInProgress.bindTo(this.contextKeyService);
+	private readonly textToSpeechInProgress: IContextKey<boolean>;
 
 	async createTextToSpeechSession(token: CancellationToken, context: string = 'speech'): Promise<ITextToSpeechSession> {
 		const provider = await this.getProvider();

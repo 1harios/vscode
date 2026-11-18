@@ -3,21 +3,21 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { FastDomNode, createFastDomNode } from 'vs/base/browser/fastDomNode';
-import { Color } from 'vs/base/common/color';
-import { IDisposable } from 'vs/base/common/lifecycle';
-import { ViewPart } from 'vs/editor/browser/view/viewPart';
-import { Position } from 'vs/editor/common/core/position';
-import { IEditorConfiguration } from 'vs/editor/common/config/editorConfiguration';
-import { TokenizationRegistry } from 'vs/editor/common/languages';
-import { editorCursorForeground, editorOverviewRulerBorder, editorOverviewRulerBackground, editorMultiCursorSecondaryForeground, editorMultiCursorPrimaryForeground } from 'vs/editor/common/core/editorColorRegistry';
-import { RenderingContext, RestrictedRenderingContext } from 'vs/editor/browser/view/renderingContext';
-import { ViewContext } from 'vs/editor/common/viewModel/viewContext';
-import { EditorTheme } from 'vs/editor/common/editorTheme';
-import * as viewEvents from 'vs/editor/common/viewEvents';
-import { EditorOption } from 'vs/editor/common/config/editorOptions';
-import { OverviewRulerDecorationsGroup } from 'vs/editor/common/viewModel';
-import { equals } from 'vs/base/common/arrays';
+import { FastDomNode, createFastDomNode } from '../../../../base/browser/fastDomNode.js';
+import { Color } from '../../../../base/common/color.js';
+import { IDisposable } from '../../../../base/common/lifecycle.js';
+import { ViewPart } from '../../view/viewPart.js';
+import { Position } from '../../../common/core/position.js';
+import { IEditorConfiguration } from '../../../common/config/editorConfiguration.js';
+import { TokenizationRegistry } from '../../../common/languages.js';
+import { editorCursorForeground, editorOverviewRulerBorder, editorOverviewRulerBackground, editorMultiCursorSecondaryForeground, editorMultiCursorPrimaryForeground } from '../../../common/core/editorColorRegistry.js';
+import { RenderingContext, RestrictedRenderingContext } from '../../view/renderingContext.js';
+import { ViewContext } from '../../../common/viewModel/viewContext.js';
+import { EditorTheme } from '../../../common/editorTheme.js';
+import * as viewEvents from '../../../common/viewEvents.js';
+import { EditorOption } from '../../../common/config/editorOptions.js';
+import { OverviewRulerDecorationsGroup } from '../../../common/viewModel.js';
+import { equals } from '../../../../base/common/arrays.js';
 
 class Settings {
 
@@ -251,7 +251,9 @@ export class DecorationsOverviewRuler extends ViewPart {
 		this._domNode.setClassName('decorationsOverviewRuler');
 		this._domNode.setPosition('absolute');
 		this._domNode.setLayerHinting(true);
-		this._domNode.setContain('strict');
+		// Not 'strict': with paint containment, Chromium rounds the layer down at fractional zoom,
+		// leaving the last device pixel column unpainted, and the editor text shows through it (#213309)
+		this._domNode.setContain('size');
 		this._domNode.setAttribute('aria-hidden', 'true');
 
 		this._updateSettings(false);
@@ -512,9 +514,7 @@ export class DecorationsOverviewRuler extends ViewPart {
 			canvasCtx.strokeStyle = this._settings.borderColor;
 			canvasCtx.moveTo(0, 0);
 			canvasCtx.lineTo(0, canvasHeight);
-			canvasCtx.stroke();
-
-			canvasCtx.moveTo(0, 0);
+			canvasCtx.moveTo(1, 0);
 			canvasCtx.lineTo(canvasWidth, 0);
 			canvasCtx.stroke();
 		}

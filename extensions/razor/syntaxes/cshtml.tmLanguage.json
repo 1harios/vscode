@@ -1,10 +1,10 @@
 {
 	"information_for_contributors": [
-		"This file has been converted from https://github.com/dotnet/razor/blob/master/src/Razor/src/Microsoft.VisualStudio.RazorExtension/EmbeddedGrammars/aspnetcorerazor.tmLanguage.json",
+		"This file has been converted from https://github.com/dotnet/roslyn/blob/master/src/Razor/src/Razor/src/Microsoft.VisualStudio.RazorExtension/EmbeddedGrammars/aspnetcorerazor.tmLanguage.json",
 		"If you want to provide a fix or improvement, please create a pull request against the original repository.",
 		"Once accepted there, we are happy to receive an update request."
 	],
-	"version": "https://github.com/dotnet/razor/commit/39159764277f3c80a786d8872eba7730da3d7ef0",
+	"version": "https://github.com/dotnet/roslyn/commit/7a33db14140ee4100f0c9c2c13bb2ff493750155",
 	"name": "ASP.NET Razor",
 	"scopeName": "text.html.cshtml",
 	"injections": {
@@ -27,6 +27,13 @@
 					"include": "#implicit-expression"
 				}
 			]
+		},
+		"source.cs": {
+			"patterns": [
+				{
+					"include": "#inline-template"
+				}
+			]
 		}
 	},
 	"patterns": [
@@ -34,7 +41,7 @@
 			"include": "#razor-control-structures"
 		},
 		{
-			"include": "text.html.basic"
+			"include": "text.html.derivative"
 		}
 	],
 	"repository": {
@@ -130,6 +137,9 @@
 					"include": "#text-tag"
 				},
 				{
+					"include": "#inline-template"
+				},
+				{
 					"include": "#wellformed-html"
 				},
 				{
@@ -155,7 +165,7 @@
 							"include": "#razor-control-structures"
 						},
 						{
-							"include": "text.html.basic"
+							"include": "text.html.derivative"
 						}
 					]
 				}
@@ -182,6 +192,111 @@
 					"name": "keyword.control.cshtml.transition.textTag.close"
 				}
 			}
+		},
+		"inline-template": {
+			"patterns": [
+				{
+					"include": "#inline-template-void-tag"
+				},
+				{
+					"include": "#inline-template-non-void-tag"
+				}
+			]
+		},
+		"inline-template-void-tag": {
+			"name": "meta.tag.structure.$4.void.html",
+			"begin": "(?i)(@)(<)(!)?(area|base|br|col|command|embed|hr|img|input|keygen|link|meta|param|source|track|wbr)(?=\\s|/?>)",
+			"beginCaptures": {
+				"1": {
+					"patterns": [
+						{
+							"include": "#transition"
+						}
+					]
+				},
+				"2": {
+					"name": "punctuation.definition.tag.begin.html"
+				},
+				"3": {
+					"name": "constant.character.escape.razor.tagHelperOptOut"
+				},
+				"4": {
+					"name": "entity.name.tag.html"
+				}
+			},
+			"patterns": [
+				{
+					"include": "#razor-control-structures"
+				},
+				{
+					"include": "text.html.derivative"
+				}
+			],
+			"end": "/?>",
+			"endCaptures": {
+				"0": {
+					"name": "punctuation.definition.tag.end.html"
+				}
+			}
+		},
+		"inline-template-non-void-tag": {
+			"begin": "(@)(<)(!)?([^/\\s>]+)(?=\\s|/?>)",
+			"beginCaptures": {
+				"1": {
+					"patterns": [
+						{
+							"include": "#transition"
+						}
+					]
+				},
+				"2": {
+					"name": "punctuation.definition.tag.begin.html"
+				},
+				"3": {
+					"name": "constant.character.escape.razor.tagHelperOptOut"
+				},
+				"4": {
+					"name": "entity.name.tag.html"
+				}
+			},
+			"end": "(</)(\\4)\\s*(>)|(/>)",
+			"endCaptures": {
+				"1": {
+					"name": "punctuation.definition.tag.begin.html"
+				},
+				"2": {
+					"name": "entity.name.tag.html"
+				},
+				"3": {
+					"name": "punctuation.definition.tag.end.html"
+				},
+				"4": {
+					"name": "punctuation.definition.tag.end.html"
+				}
+			},
+			"patterns": [
+				{
+					"begin": "(?<=>)(?!$)",
+					"end": "(?=</)",
+					"patterns": [
+						{
+							"include": "#inline-template"
+						},
+						{
+							"include": "#wellformed-html"
+						},
+						{
+							"include": "#razor-control-structures"
+						}
+					]
+				},
+				{
+					"include": "#razor-control-structures"
+				},
+				{
+					"include": "text.html.derivative"
+				}
+			]
 		},
 		"razor-comment": {
 			"name": "meta.comment.razor",
@@ -216,10 +331,22 @@
 		"wellformed-html": {
 			"patterns": [
 				{
+					"include": "#html-embedded-content-tag"
+				},
+				{
 					"include": "#void-tag"
 				},
 				{
 					"include": "#non-void-tag"
+				}
+			]
+		},
+		"html-embedded-content-tag": {
+			"begin": "(?i)(?=<(?:script|style)\\b(?!-))",
+			"end": "(?!\\G)",
+			"patterns": [
+				{
+					"include": "text.html.derivative"
 				}
 			]
 		},
@@ -239,7 +366,7 @@
 			},
 			"patterns": [
 				{
-					"include": "text.html.basic#attribute"
+					"include": "text.html.derivative"
 				}
 			],
 			"end": "/?>",
@@ -286,7 +413,7 @@
 							"include": "#razor-control-structures"
 						},
 						{
-							"include": "text.html.basic#attribute"
+							"include": "text.html.derivative"
 						}
 					]
 				},
@@ -1185,7 +1312,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"using-statement-with-optional-transition": {
 			"name": "meta.statement.using.razor",
@@ -1213,7 +1340,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"if-statement": {
 			"name": "meta.statement.if.razor",
@@ -1241,7 +1368,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"if-statement-with-optional-transition": {
 			"name": "meta.statement.if.razor",
@@ -1269,7 +1396,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"else-part": {
 			"name": "meta.statement.else.razor",
@@ -1293,7 +1420,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"for-statement": {
 			"name": "meta.statement.for.razor",
@@ -1321,7 +1448,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"for-statement-with-optional-transition": {
 			"name": "meta.statement.for.razor",
@@ -1349,7 +1476,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"foreach-statement": {
 			"name": "meta.statement.foreach.razor",
@@ -1384,7 +1511,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"foreach-statement-with-optional-transition": {
 			"name": "meta.statement.foreach.razor",
@@ -1419,7 +1546,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"foreach-condition": {
 			"begin": "\\(",
@@ -1505,7 +1632,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"do-statement-with-optional-transition": {
 			"name": "meta.statement.do.razor",
@@ -1533,7 +1660,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"while-statement": {
 			"name": "meta.statement.while.razor",
@@ -1594,7 +1721,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"switch-statement-with-optional-transition": {
 			"name": "meta.statement.switch.razor",
@@ -1622,7 +1749,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"switch-code-block": {
 			"name": "meta.structure.razor.csharp.codeblock.switch",
@@ -1635,6 +1762,9 @@
 			"patterns": [
 				{
 					"include": "source.cs#switch-label"
+				},
+				{
+					"include": "#csharp-code-block"
 				},
 				{
 					"include": "#razor-codeblock-body"
@@ -1673,7 +1803,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"lock-statement-with-optional-transition": {
 			"name": "meta.statement.lock.razor",
@@ -1701,7 +1831,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"try-statement": {
 			"patterns": [
@@ -1755,7 +1885,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"try-block-with-optional-transition": {
 			"name": "meta.statement.try.razor",
@@ -1783,7 +1913,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"catch-clause": {
 			"name": "meta.statement.catch.razor",
@@ -1807,7 +1937,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"catch-condition": {
 			"begin": "\\(",
@@ -1856,7 +1986,7 @@
 					"include": "#razor-codeblock-body"
 				}
 			],
-			"end": "(?<=})"
+			"end": "(?<=})|(?<=;)|(?=^\\s*\\})"
 		},
 		"await-prefix": {
 			"name": "keyword.other.await.cs",

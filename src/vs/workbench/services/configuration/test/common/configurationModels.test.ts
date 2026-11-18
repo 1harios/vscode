@@ -2,17 +2,17 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-import * as assert from 'assert';
-import { Registry } from 'vs/platform/registry/common/platform';
-import { StandaloneConfigurationModelParser, Configuration } from 'vs/workbench/services/configuration/common/configurationModels';
-import { ConfigurationModelParser, ConfigurationModel, ConfigurationParseOptions } from 'vs/platform/configuration/common/configurationModels';
-import { IConfigurationRegistry, Extensions as ConfigurationExtensions, ConfigurationScope } from 'vs/platform/configuration/common/configurationRegistry';
-import { ResourceMap } from 'vs/base/common/map';
-import { WorkspaceFolder } from 'vs/platform/workspace/common/workspace';
-import { URI } from 'vs/base/common/uri';
-import { Workspace } from 'vs/platform/workspace/test/common/testWorkspace';
-import { ensureNoDisposablesAreLeakedInTestSuite } from 'vs/base/test/common/utils';
-import { NullLogService } from 'vs/platform/log/common/log';
+import assert from 'assert';
+import { Registry } from '../../../../../platform/registry/common/platform.js';
+import { StandaloneConfigurationModelParser, Configuration } from '../../common/configurationModels.js';
+import { ConfigurationModelParser, ConfigurationModel, ConfigurationParseOptions } from '../../../../../platform/configuration/common/configurationModels.js';
+import { IConfigurationRegistry, Extensions as ConfigurationExtensions, ConfigurationScope } from '../../../../../platform/configuration/common/configurationRegistry.js';
+import { ResourceMap } from '../../../../../base/common/map.js';
+import { WorkspaceFolder } from '../../../../../platform/workspace/common/workspace.js';
+import { URI } from '../../../../../base/common/uri.js';
+import { Workspace } from '../../../../../platform/workspace/test/common/testWorkspace.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { NullLogService } from '../../../../../platform/log/common/log.js';
 
 suite('FolderSettingsModelParser', () => {
 
@@ -143,6 +143,33 @@ suite('StandaloneConfigurationModelParser', () => {
 		assert.deepStrictEqual(testObject.configurationModel.contents, expected);
 	});
 
+	test('merging stand alone configuration with __proto__ path does not pollute Object.prototype', () => {
+		const settings = new ConfigurationModelParser('settings', new NullLogService());
+		settings.parse(JSON.stringify({ 'mcp.container': true }));
+		const standalone = new StandaloneConfigurationModelParser('mcp', 'mcp', new NullLogService());
+		standalone.parse(JSON.stringify({ '__proto__.pollutedByStandaloneMerge': 'polluted', 'servers': { 'a': { 'command': 'b' } } }));
+
+		try {
+			const merged = settings.configurationModel.merge(standalone.configurationModel);
+
+			assert.deepStrictEqual({
+				pollutedPrototype: (Object.prototype as Record<string, unknown>)['pollutedByStandaloneMerge'],
+				pollutedObject: ({} as Record<string, unknown>)['pollutedByStandaloneMerge'],
+				mergedPrototype: Object.getPrototypeOf(merged.getValue('mcp')),
+				servers: merged.getValue('mcp.servers'),
+				container: merged.getValue('mcp.container'),
+			}, {
+				pollutedPrototype: undefined,
+				pollutedObject: undefined,
+				mergedPrototype: Object.prototype,
+				servers: { 'a': { 'command': 'b' } },
+				container: true,
+			});
+		} finally {
+			delete (Object.prototype as Record<string, unknown>)['pollutedByStandaloneMerge'];
+		}
+	});
+
 });
 
 suite('Workspace Configuration', () => {
@@ -211,7 +238,7 @@ suite('Workspace Configuration', () => {
 
 });
 
-function toConfigurationModel(obj: any): ConfigurationModel {
+function toConfigurationModel(obj: Record<string, unknown>): ConfigurationModel {
 	const parser = new ConfigurationModelParser('test', new NullLogService());
 	parser.parse(JSON.stringify(obj));
 	return parser.configurationModel;

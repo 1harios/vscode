@@ -3,22 +3,23 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { DeferredPromise } from 'vs/base/common/async';
-import { VSBuffer } from 'vs/base/common/buffer';
-import { Emitter, Event } from 'vs/base/common/event';
-import { Lazy } from 'vs/base/common/lazy';
-import { Disposable } from 'vs/base/common/lifecycle';
-import { IObservable, observableValue } from 'vs/base/common/observable';
-import { language } from 'vs/base/common/platform';
-import { WellDefinedPrefixTree } from 'vs/base/common/prefixTree';
-import { localize } from 'vs/nls';
-import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
-import { IUriIdentityService } from 'vs/platform/uriIdentity/common/uriIdentity';
-import { IComputedStateAccessor, refreshComputedState } from 'vs/workbench/contrib/testing/common/getComputedState';
-import { TestCoverage } from 'vs/workbench/contrib/testing/common/testCoverage';
-import { TestId } from 'vs/workbench/contrib/testing/common/testId';
-import { makeEmptyCounts, maxPriority, statesInOrder, terminalStatePriorities, TestStateCount } from 'vs/workbench/contrib/testing/common/testingStates';
-import { getMarkId, IRichLocation, ISerializedTestResults, ITestItem, ITestMessage, ITestOutputMessage, ITestRunTask, ITestTaskState, ResolvedTestRunRequest, TestItemExpandState, TestMessageType, TestResultItem, TestResultState } from 'vs/workbench/contrib/testing/common/testTypes';
+import { DeferredPromise } from '../../../../base/common/async.js';
+import { VSBuffer } from '../../../../base/common/buffer.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
+import { Lazy } from '../../../../base/common/lazy.js';
+import { Disposable } from '../../../../base/common/lifecycle.js';
+import { IObservable, observableValue } from '../../../../base/common/observable.js';
+import { language } from '../../../../base/common/platform.js';
+import { WellDefinedPrefixTree } from '../../../../base/common/prefixTree.js';
+import { removeAnsiEscapeCodes } from '../../../../base/common/strings.js';
+import { localize } from '../../../../nls.js';
+import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
+import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
+import { ComputedStateCache, IComputedStateAccessor, refreshComputedState } from './getComputedState.js';
+import { TestCoverage } from './testCoverage.js';
+import { TestId } from './testId.js';
+import { makeEmptyCounts, maxPriority, statesInOrder, terminalStatePriorities, TestStateCount } from './testingStates.js';
+import { getMarkId, IRichLocation, ISerializedTestResults, ITestItem, ITestMessage, ITestOutputMessage, ITestRunTask, ITestTaskState, ResolvedTestRunRequest, TestItemExpandState, TestMessageType, TestResultItem, TestResultState } from './testTypes.js';
 
 export interface ITestRunTaskResults extends ITestRunTask {
 	/**
@@ -246,6 +247,7 @@ export const maxCountPriority = (counts: Readonly<TestStateCount>) => {
 const getMarkCode = (marker: number, start: boolean) => `\x1b]633;SetMark;Id=${getMarkId(marker, start)};Hidden\x07`;
 
 interface TestResultItemWithChildren extends TestResultItem {
+	computedStateCache?: ComputedStateCache;
 	/** Children in the run */
 	children: TestResultItemWithChildren[];
 }
@@ -319,6 +321,7 @@ export class LiveTestResult extends Disposable implements ITestResult {
 	}
 
 	private readonly computedStateAccessor: IComputedStateAccessor<TestResultItemWithChildren> = {
+		getCache: i => i.computedStateCache ??= new ComputedStateCache(),
 		getOwnState: i => i.ownComputedState,
 		getCurrentComputedState: i => i.computedState,
 		setComputedState: (i, s) => i.computedState = s,
@@ -340,6 +343,7 @@ export class LiveTestResult extends Disposable implements ITestResult {
 		public readonly id: string,
 		public readonly persist: boolean,
 		public readonly request: ResolvedTestRunRequest,
+		public readonly insertOrder: number,
 		@ITelemetryService private readonly telemetry: ITelemetryService,
 	) {
 		super();
@@ -356,7 +360,8 @@ export class LiveTestResult extends Disposable implements ITestResult {
 	 * Appends output that occurred during the test run.
 	 */
 	public appendOutput(output: VSBuffer, taskId: string, location?: IRichLocation, testId?: string): void {
-		const preview = output.byteLength > 100 ? output.slice(0, 100).toString() + '…' : output.toString();
+		const rawPreview = output.byteLength > 100 ? output.slice(0, 100).toString() + '…' : output.toString();
+		const preview = removeAnsiEscapeCodes(rawPreview);
 		let marker: number | undefined;
 
 		// currently, the UI only exposes jump-to-message from tests or locations,
@@ -411,7 +416,8 @@ export class LiveTestResult extends Disposable implements ITestResult {
 		}
 
 		for (let i = 1; i < chain.length; i++) {
-			parent = this.addTestToRun(controllerId, chain[i], parent.item.extId);
+			// Another profile's batch may register the same node after it has reported results.
+			parent = this.testById.get(chain[i].extId) ?? this.addTestToRun(controllerId, chain[i], parent.item.extId);
 		}
 
 		return undefined;
@@ -464,7 +470,7 @@ export class LiveTestResult extends Disposable implements ITestResult {
 		task.output.end();
 
 		this.setAllToState(
-			TestResultState.Unset,
+			TestResultState.Skipped,
 			taskId,
 			t => t.state === TestResultState.Queued || t.state === TestResultState.Running,
 		);
@@ -607,7 +613,7 @@ export class LiveTestResult extends Disposable implements ITestResult {
 	private readonly doSerialize = new Lazy((): ISerializedTestResults => ({
 		id: this.id,
 		completedAt: this.completedAt!,
-		tasks: this.tasks.map(t => ({ id: t.id, name: t.name })),
+		tasks: this.tasks.map(t => ({ id: t.id, name: t.name, ctrlId: t.ctrlId, hasCoverage: !!t.coverage.get() })),
 		name: this.name,
 		request: this.request,
 		items: [...this.testById.values()].map(TestResultItem.serializeWithoutMessages),
@@ -616,7 +622,7 @@ export class LiveTestResult extends Disposable implements ITestResult {
 	private readonly doSerializeWithMessages = new Lazy((): ISerializedTestResults => ({
 		id: this.id,
 		completedAt: this.completedAt!,
-		tasks: this.tasks.map(t => ({ id: t.id, name: t.name })),
+		tasks: this.tasks.map(t => ({ id: t.id, name: t.name, ctrlId: t.ctrlId, hasCoverage: !!t.coverage.get() })),
 		name: this.name,
 		request: this.request,
 		items: [...this.testById.values()].map(TestResultItem.serialize),
@@ -675,7 +681,8 @@ export class HydratedTestResult implements ITestResult {
 		this.completedAt = serialized.completedAt;
 		this.tasks = serialized.tasks.map((task, i) => ({
 			id: task.id,
-			name: task.name,
+			name: task.name || localize('testUnnamedTask', 'Unnamed Task'),
+			ctrlId: task.ctrlId,
 			running: false,
 			coverage: observableValue(this, undefined),
 			output: emptyRawOutput,

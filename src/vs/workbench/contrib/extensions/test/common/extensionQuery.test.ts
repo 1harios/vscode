@@ -3,10 +3,13 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as assert from 'assert';
-import { Query } from 'vs/workbench/contrib/extensions/common/extensionQuery';
+import assert from 'assert';
+import { Query } from '../../common/extensionQuery.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 
 suite('Extension query', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
 	test('parse', () => {
 		let query = Query.parse('');
 		assert.strictEqual(query.value, '');
@@ -124,6 +127,30 @@ suite('Extension query', () => {
 		assert(query.isValid());
 	});
 
+	test('containsMcpTerm', () => {
+		assert.deepStrictEqual([
+			'mcp',
+			'MCP server',
+			'azure-mcp',
+			'(mcp)',
+			'mcp.server',
+			'amcp',
+			'mcps',
+			'mcp_server',
+			'myMcpExtension',
+		].map(value => new Query(value, '').containsMcpTerm()), [
+			true,
+			true,
+			true,
+			true,
+			true,
+			false,
+			false,
+			false,
+			false,
+		]);
+	});
+
 	test('equals', () => {
 		const query1 = new Query('hello', '');
 		let query2 = new Query('hello', '');
@@ -140,10 +167,10 @@ suite('Extension query', () => {
 	});
 
 	test('autocomplete', () => {
-		Query.suggestions('@sort:in').some(x => x === '@sort:installs ');
-		Query.suggestions('@sort:installs').every(x => x !== '@sort:rating ');
+		Query.suggestions('@sort:in', null).some(x => x === '@sort:installs ');
+		Query.suggestions('@sort:installs', null).every(x => x !== '@sort:rating ');
 
-		Query.suggestions('@category:blah').some(x => x === '@category:"extension packs" ');
-		Query.suggestions('@category:"extension packs"').every(x => x !== '@category:formatters ');
+		Query.suggestions('@category:blah', null).some(x => x === '@category:"extension packs" ');
+		Query.suggestions('@category:"extension packs"', null).every(x => x !== '@category:formatters ');
 	});
 });

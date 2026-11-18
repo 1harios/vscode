@@ -3,8 +3,9 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { CodeWindow, mainWindow } from 'vs/base/browser/window';
-import { Emitter } from 'vs/base/common/event';
+import { CodeWindow, mainWindow } from './window.js';
+import { Emitter } from '../common/event.js';
+import { isIOS } from '../common/platform.js';
 
 class WindowManager {
 
@@ -66,7 +67,7 @@ class WindowManager {
 	}
 }
 
-export function addMatchMediaChangeListener(targetWindow: Window, query: string | MediaQueryList, callback: (this: MediaQueryList, ev: MediaQueryListEvent) => any): void {
+export function addMatchMediaChangeListener(targetWindow: Window, query: string | MediaQueryList, callback: (this: MediaQueryList, ev: MediaQueryListEvent) => unknown): void {
 	if (typeof query === 'string') {
 		query = targetWindow.matchMedia(query);
 	}
@@ -127,9 +128,57 @@ export function isStandalone(): boolean {
 	return standalone;
 }
 
+/**
+ * Whether we are an installed web app (PWA) on a phone or tablet.
+ *
+ * These have no browser tab to fall back on, so anything a tab could recover from
+ * — a blocked popup, a navigation that lands somewhere unexpected — is a dead end
+ * here. Desktop installed apps still get real windows and are deliberately not
+ * included.
+ */
+export function isMobileStandalone(): boolean {
+	return isStandalone() && (isIOS || isAndroid);
+}
+
 // Visible means that the feature is enabled, not necessarily being rendered
 // e.g. visible is true even in fullscreen mode where the controls are hidden
 // See docs at https://developer.mozilla.org/en-US/docs/Web/API/WindowControlsOverlay/visible
 export function isWCOEnabled(): boolean {
-	return (navigator as any)?.windowControlsOverlay?.visible;
+	return !!(navigator as Navigator & { windowControlsOverlay?: { visible: boolean } })?.windowControlsOverlay?.visible;
+}
+
+// Returns the bounding rect of the titlebar area if it is supported and defined
+// See docs at https://developer.mozilla.org/en-US/docs/Web/API/WindowControlsOverlay/getTitlebarAreaRect
+export function getWCOTitlebarAreaRect(targetWindow: Window): DOMRect | undefined {
+	return (targetWindow.navigator as Navigator & { windowControlsOverlay?: { getTitlebarAreaRect: () => DOMRect } })?.windowControlsOverlay?.getTitlebarAreaRect();
+}
+
+/**
+ * Returns the titlebar area rect of the given window only while its window
+ * controls overlay is visible. The value is read on every call.
+ */
+export function getVisibleWCOTitlebarAreaRect(targetWindow: Window): DOMRect | undefined {
+	const overlay = (targetWindow.navigator as Navigator & { windowControlsOverlay?: { visible: boolean; getTitlebarAreaRect: () => DOMRect } })?.windowControlsOverlay;
+	return overlay?.visible ? overlay.getTitlebarAreaRect() : undefined;
+}
+
+export interface IMonacoEnvironment {
+
+	createTrustedTypesPolicy?<Options extends TrustedTypePolicyOptions>(
+		policyName: string,
+		policyOptions?: Options,
+	): undefined | Pick<TrustedTypePolicy, 'name' | Extract<keyof Options, keyof TrustedTypePolicyOptions>>;
+
+	getWorker?(moduleId: string, label: string): Worker | Promise<Worker>;
+
+	getWorkerUrl?(moduleId: string, label: string): string;
+
+	globalAPI?: boolean;
+
+}
+interface IGlobalWithMonacoEnvironment {
+	MonacoEnvironment?: IMonacoEnvironment;
+}
+export function getMonacoEnvironment(): IMonacoEnvironment | undefined {
+	return (globalThis as IGlobalWithMonacoEnvironment).MonacoEnvironment;
 }

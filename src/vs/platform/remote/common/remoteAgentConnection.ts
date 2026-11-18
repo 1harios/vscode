@@ -3,23 +3,23 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { CancelablePromise, createCancelablePromise, promiseWithResolvers } from 'vs/base/common/async';
-import { VSBuffer } from 'vs/base/common/buffer';
-import { CancellationToken, CancellationTokenSource } from 'vs/base/common/cancellation';
-import { isCancellationError, onUnexpectedError } from 'vs/base/common/errors';
-import { Emitter } from 'vs/base/common/event';
-import { Disposable, DisposableStore, IDisposable, toDisposable } from 'vs/base/common/lifecycle';
-import { RemoteAuthorities } from 'vs/base/common/network';
-import * as performance from 'vs/base/common/performance';
-import { StopWatch } from 'vs/base/common/stopwatch';
-import { generateUuid } from 'vs/base/common/uuid';
-import { IIPCLogger } from 'vs/base/parts/ipc/common/ipc';
-import { Client, ISocket, PersistentProtocol, SocketCloseEventType } from 'vs/base/parts/ipc/common/ipc.net';
-import { ILogService } from 'vs/platform/log/common/log';
-import { RemoteAgentConnectionContext } from 'vs/platform/remote/common/remoteAgentEnvironment';
-import { RemoteAuthorityResolverError, RemoteConnection } from 'vs/platform/remote/common/remoteAuthorityResolver';
-import { IRemoteSocketFactoryService } from 'vs/platform/remote/common/remoteSocketFactoryService';
-import { ISignService } from 'vs/platform/sign/common/sign';
+import { CancelablePromise, createCancelablePromise, ProcessTimeRunOnceScheduler, promiseWithResolvers } from '../../../base/common/async.js';
+import { VSBuffer } from '../../../base/common/buffer.js';
+import { CancellationToken, CancellationTokenSource } from '../../../base/common/cancellation.js';
+import { isCancellationError, onUnexpectedError } from '../../../base/common/errors.js';
+import { Emitter } from '../../../base/common/event.js';
+import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../../base/common/lifecycle.js';
+import { RemoteAuthorities } from '../../../base/common/network.js';
+import * as performance from '../../../base/common/performance.js';
+import { StopWatch } from '../../../base/common/stopwatch.js';
+import { generateUuid } from '../../../base/common/uuid.js';
+import { IIPCLogger } from '../../../base/parts/ipc/common/ipc.js';
+import { Client, ISocket, PersistentProtocol, ProtocolConstants, SocketCloseEventType } from '../../../base/parts/ipc/common/ipc.net.js';
+import { ILogService } from '../../log/common/log.js';
+import { RemoteAgentConnectionContext } from './remoteAgentEnvironment.js';
+import { RemoteAuthorityResolverError, RemoteConnection } from './remoteAuthorityResolver.js';
+import { IRemoteSocketFactoryService } from './remoteSocketFactoryService.js';
+import { ISignService } from '../../sign/common/sign.js';
 
 const RECONNECT_TIMEOUT = 30 * 1000 /* 30s */;
 
@@ -372,7 +372,7 @@ export interface ITunnelConnectionStartParams {
 async function doConnectRemoteAgentTunnel(options: ISimpleConnectionOptions, startParams: ITunnelConnectionStartParams, timeoutCancellationToken: CancellationToken): Promise<PersistentProtocol> {
 	const startTime = Date.now();
 	const logPrefix = connectLogPrefix(options, ConnectionType.Tunnel);
-	const { protocol } = await connectToRemoteExtensionHostAgent(options, ConnectionType.Tunnel, startParams, timeoutCancellationToken);
+	const { protocol } = await connectToRemoteExtensionHostAgentAndReadOneMessage(options, ConnectionType.Tunnel, startParams, timeoutCancellationToken);
 	options.logService.trace(`${logPrefix} 6/6. handshake finished, connection is up and running after ${logElapsed(startTime)}!`);
 	return protocol;
 }
@@ -555,6 +555,17 @@ export abstract class PersistentConnection extends Disposable {
 
 	private readonly _onDidStateChange = this._register(new Emitter<PersistentConnectionEvent>());
 	public readonly onDidStateChange = this._onDidStateChange.event;
+	private _connectionState = PersistentConnectionEventType.ConnectionGain;
+
+	/** Whether the transport is currently connected, including for late subscribers. */
+	public get isConnected(): boolean {
+		return this._connectionState === PersistentConnectionEventType.ConnectionGain && !this._isDisposed && !this._isPermanentFailure;
+	}
+
+	private _fireStateChange(event: PersistentConnectionEvent): void {
+		this._connectionState = event.type;
+		this._onDidStateChange.fire(event);
+	}
 
 	private _permanentFailure: boolean = false;
 	private get _isPermanentFailure(): boolean {
@@ -563,6 +574,7 @@ export abstract class PersistentConnection extends Disposable {
 
 	private _isReconnecting: boolean = false;
 	private _isDisposed: boolean = false;
+	private _reconnectionGraceTime: number = ProtocolConstants.ReconnectionGraceTime;
 
 	constructor(
 		private readonly _connectionType: ConnectionType,
@@ -573,7 +585,8 @@ export abstract class PersistentConnection extends Disposable {
 	) {
 		super();
 
-		this._onDidStateChange.fire(new ConnectionGainEvent(this.reconnectionToken, 0, 0));
+
+		this._fireStateChange(new ConnectionGainEvent(this.reconnectionToken, 0, 0));
 
 		this._register(protocol.onSocketClose((e) => {
 			const logPrefix = commonLogPrefix(this._connectionType, this.reconnectionToken, true);
@@ -594,7 +607,7 @@ export abstract class PersistentConnection extends Disposable {
 		}));
 		this._register(protocol.onSocketTimeout((e) => {
 			const logPrefix = commonLogPrefix(this._connectionType, this.reconnectionToken, true);
-			this._options.logService.info(`${logPrefix} received socket timeout event (unacknowledgedMsgCount: ${e.unacknowledgedMsgCount}, timeSinceOldestUnacknowledgedMsg: ${e.timeSinceOldestUnacknowledgedMsg}, timeSinceLastReceivedSomeData: ${e.timeSinceLastReceivedSomeData}).`);
+			this._options.logService.info(`${logPrefix} received socket timeout event (reason: ${e.reason}, unacknowledgedMsgCount: ${e.unacknowledgedMsgCount}, timeSinceOldestUnacknowledgedMsg: ${e.timeSinceOldestUnacknowledgedMsg}, timeSinceLastReceivedSomeData: ${e.timeSinceLastReceivedSomeData}).`);
 			this._beginReconnecting();
 		}));
 
@@ -609,6 +622,13 @@ export abstract class PersistentConnection extends Disposable {
 		if (this._isPermanentFailure) {
 			this._gotoPermanentFailure(PersistentConnection._permanentFailureMillisSinceLastIncomingData, PersistentConnection._permanentFailureAttempt, PersistentConnection._permanentFailureHandled);
 		}
+	}
+
+	public updateGraceTime(graceTime: number): void {
+		const sanitizedGrace = sanitizeGraceTime(graceTime, ProtocolConstants.ReconnectionGraceTime);
+		const logPrefix = commonLogPrefix(this._connectionType, this.reconnectionToken, false);
+		this._options.logService.trace(`${logPrefix} Applying reconnection grace time: ${sanitizedGrace}ms (${Math.floor(sanitizedGrace / 1000)}s)`);
+		this._reconnectionGraceTime = sanitizedGrace;
 	}
 
 	public override dispose(): void {
@@ -636,8 +656,18 @@ export abstract class PersistentConnection extends Disposable {
 		}
 		const logPrefix = commonLogPrefix(this._connectionType, this.reconnectionToken, true);
 		this._options.logService.info(`${logPrefix} starting reconnecting loop. You can get more information with the trace log level.`);
-		this._onDidStateChange.fire(new ConnectionLostEvent(this.reconnectionToken, this.protocol.getMillisSinceLastIncomingData()));
+		this._fireStateChange(new ConnectionLostEvent(this.reconnectionToken, this.protocol.getMillisSinceLastIncomingData()));
 		const TIMES = [0, 5, 5, 10, 10, 10, 10, 10, 30];
+		const graceTime = this._reconnectionGraceTime;
+		this._options.logService.info(`${logPrefix} starting reconnection with grace time: ${graceTime}ms (${Math.floor(graceTime / 1000)}s)`);
+		if (graceTime <= 0) {
+			this._options.logService.error(`${logPrefix} reconnection grace time is set to 0ms, will not attempt to reconnect.`);
+			this._onReconnectionPermanentFailure(this.protocol.getMillisSinceLastIncomingData(), 0, false);
+			return;
+		}
+		let graceTimeExpired = false;
+		const graceTimeScheduler = new ProcessTimeRunOnceScheduler(() => graceTimeExpired = true, graceTime);
+		graceTimeScheduler.schedule();
 		let attempt = -1;
 		do {
 			attempt++;
@@ -645,7 +675,7 @@ export abstract class PersistentConnection extends Disposable {
 			try {
 				if (waitTime > 0) {
 					const sleepPromise = sleep(waitTime);
-					this._onDidStateChange.fire(new ReconnectionWaitEvent(this.reconnectionToken, this.protocol.getMillisSinceLastIncomingData(), waitTime, sleepPromise));
+					this._fireStateChange(new ReconnectionWaitEvent(this.reconnectionToken, this.protocol.getMillisSinceLastIncomingData(), waitTime, sleepPromise));
 
 					this._options.logService.info(`${logPrefix} waiting for ${waitTime} seconds before reconnecting...`);
 					try {
@@ -659,13 +689,13 @@ export abstract class PersistentConnection extends Disposable {
 				}
 
 				// connection was lost, let's try to re-establish it
-				this._onDidStateChange.fire(new ReconnectionRunningEvent(this.reconnectionToken, this.protocol.getMillisSinceLastIncomingData(), attempt + 1));
+				this._fireStateChange(new ReconnectionRunningEvent(this.reconnectionToken, this.protocol.getMillisSinceLastIncomingData(), attempt + 1));
 				this._options.logService.info(`${logPrefix} resolving connection...`);
 				const simpleOptions = await resolveConnectionOptions(this._options, this.reconnectionToken, this.protocol);
 				this._options.logService.info(`${logPrefix} connecting to ${simpleOptions.connectTo}...`);
 				await this._reconnect(simpleOptions, createTimeoutCancellation(RECONNECT_TIMEOUT));
 				this._options.logService.info(`${logPrefix} reconnected!`);
-				this._onDidStateChange.fire(new ConnectionGainEvent(this.reconnectionToken, this.protocol.getMillisSinceLastIncomingData(), attempt + 1));
+				this._fireStateChange(new ConnectionGainEvent(this.reconnectionToken, this.protocol.getMillisSinceLastIncomingData(), attempt + 1));
 
 				break;
 			} catch (err) {
@@ -675,9 +705,9 @@ export abstract class PersistentConnection extends Disposable {
 					this._onReconnectionPermanentFailure(this.protocol.getMillisSinceLastIncomingData(), attempt + 1, false);
 					break;
 				}
-				if (attempt > 360) {
-					// ReconnectionGraceTime is 3hrs, with 30s between attempts that yields a maximum of 360 attempts
-					this._options.logService.error(`${logPrefix} An error occurred while reconnecting, but it will be treated as a permanent error because the reconnection grace time has expired! Will give up now! Error:`);
+				if (graceTimeExpired) {
+					const graceSeconds = Math.round(graceTime / 1000);
+					this._options.logService.error(`${logPrefix} An error occurred while reconnecting, but it will be treated as a permanent error because the reconnection grace time (${graceSeconds}s) has expired! Will give up now! Error:`);
 					this._options.logService.error(err);
 					this._onReconnectionPermanentFailure(this.protocol.getMillisSinceLastIncomingData(), attempt + 1, false);
 					break;
@@ -712,6 +742,7 @@ export abstract class PersistentConnection extends Disposable {
 				break;
 			}
 		} while (!this._isPermanentFailure && !this._isDisposed);
+		graceTimeScheduler.dispose();
 	}
 
 	private _onReconnectionPermanentFailure(millisSinceLastIncomingData: number, attempt: number, handled: boolean): void {
@@ -723,7 +754,7 @@ export abstract class PersistentConnection extends Disposable {
 	}
 
 	private _gotoPermanentFailure(millisSinceLastIncomingData: number, attempt: number, handled: boolean): void {
-		this._onDidStateChange.fire(new ReconnectionPermanentFailureEvent(this.reconnectionToken, millisSinceLastIncomingData, attempt, handled));
+		this._fireStateChange(new ReconnectionPermanentFailureEvent(this.reconnectionToken, millisSinceLastIncomingData, attempt, handled));
 		safeDisposeProtocolAndSocket(this.protocol);
 	}
 
@@ -781,10 +812,21 @@ function safeDisposeProtocolAndSocket(protocol: PersistentProtocol): void {
 function getErrorFromMessage(msg: any): Error | null {
 	if (msg && msg.type === 'error') {
 		const error = new Error(`Connection error: ${msg.reason}`);
+		// eslint-disable-next-line local/code-no-any-casts
 		(<any>error).code = 'VSCODE_CONNECTION_ERROR';
 		return error;
 	}
 	return null;
+}
+
+function sanitizeGraceTime(candidate: number, fallback: number): number {
+	if (typeof candidate !== 'number' || !isFinite(candidate) || candidate < 0) {
+		return fallback;
+	}
+	if (candidate > Number.MAX_SAFE_INTEGER) {
+		return Number.MAX_SAFE_INTEGER;
+	}
+	return Math.floor(candidate);
 }
 
 function stringRightPad(str: string, len: number): string {

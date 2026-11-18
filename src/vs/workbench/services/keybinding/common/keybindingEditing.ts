@@ -3,26 +3,26 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { localize } from 'vs/nls';
-import { Queue } from 'vs/base/common/async';
-import * as json from 'vs/base/common/json';
-import * as objects from 'vs/base/common/objects';
-import { setProperty } from 'vs/base/common/jsonEdit';
-import { Edit } from 'vs/base/common/jsonFormatter';
-import { Disposable, IReference } from 'vs/base/common/lifecycle';
-import { EditOperation } from 'vs/editor/common/core/editOperation';
-import { Range } from 'vs/editor/common/core/range';
-import { Selection } from 'vs/editor/common/core/selection';
-import { ITextModel } from 'vs/editor/common/model';
-import { ITextModelService, IResolvedTextEditorModel } from 'vs/editor/common/services/resolverService';
-import { ContextKeyExpr } from 'vs/platform/contextkey/common/contextkey';
-import { IFileService } from 'vs/platform/files/common/files';
-import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
-import { IUserFriendlyKeybinding } from 'vs/platform/keybinding/common/keybinding';
-import { ResolvedKeybindingItem } from 'vs/platform/keybinding/common/resolvedKeybindingItem';
-import { ITextFileService } from 'vs/workbench/services/textfile/common/textfiles';
-import { InstantiationType, registerSingleton } from 'vs/platform/instantiation/common/extensions';
-import { IUserDataProfileService } from 'vs/workbench/services/userDataProfile/common/userDataProfile';
+import { localize } from '../../../../nls.js';
+import { Queue } from '../../../../base/common/async.js';
+import * as json from '../../../../base/common/json.js';
+import * as objects from '../../../../base/common/objects.js';
+import { setProperty } from '../../../../base/common/jsonEdit.js';
+import { Edit } from '../../../../base/common/jsonFormatter.js';
+import { Disposable, IReference } from '../../../../base/common/lifecycle.js';
+import { EditOperation } from '../../../../editor/common/core/editOperation.js';
+import { Range } from '../../../../editor/common/core/range.js';
+import { Selection } from '../../../../editor/common/core/selection.js';
+import { ITextModel } from '../../../../editor/common/model.js';
+import { ITextModelService, IResolvedTextEditorModel } from '../../../../editor/common/services/resolverService.js';
+import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
+import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import { IKeybindingService, IUserFriendlyKeybinding } from '../../../../platform/keybinding/common/keybinding.js';
+import { ResolvedKeybindingItem } from '../../../../platform/keybinding/common/resolvedKeybindingItem.js';
+import { ITextFileService } from '../../textfile/common/textfiles.js';
+import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
+import { IUserDataProfileService } from '../../userDataProfile/common/userDataProfile.js';
 
 export const IKeybindingEditingService = createDecorator<IKeybindingEditingService>('keybindingEditingService');
 
@@ -49,6 +49,7 @@ export class KeybindingsEditingService extends Disposable implements IKeybinding
 		@ITextFileService private readonly textFileService: ITextFileService,
 		@IFileService private readonly fileService: IFileService,
 		@IUserDataProfileService private readonly userDataProfileService: IUserDataProfileService,
+		@IKeybindingService private readonly keybindingService: IKeybindingService,
 	) {
 		super();
 		this.queue = new Queue<void>();
@@ -134,8 +135,9 @@ export class KeybindingsEditingService extends Disposable implements IKeybinding
 				this.applyEditsToBuffer(edits[0], model);
 			}
 		} else {
-			// Add the new keybinding with new key
-			this.applyEditsToBuffer(setProperty(model.getValue(), [-1], this.asObject(newKey, keybindingItem.command, when, false), { tabSize, insertSpaces, eol })[0], model);
+			// Add the new keybinding with new key. A default system-wide keybinding only registers while its `when` clause
+			// holds, but a user's registers always, so the user's copy is not system-wide.
+			this.applyEditsToBuffer(setProperty(model.getValue(), [-1], this.asObject(newKey, keybindingItem.command, when, false, keybindingItem.commandArgs, !keybindingItem.isDefault && keybindingItem.systemWide), { tabSize, insertSpaces, eol })[0], model);
 		}
 	}
 
@@ -173,21 +175,14 @@ export class KeybindingsEditingService extends Disposable implements IKeybinding
 	}
 
 	private findUserKeybindingEntryIndex(keybindingItem: ResolvedKeybindingItem, userKeybindingEntries: IUserFriendlyKeybinding[]): number {
-		for (let index = 0; index < userKeybindingEntries.length; index++) {
-			const keybinding = userKeybindingEntries[index];
-			if (keybinding.command === keybindingItem.command) {
-				if (!keybinding.when && !keybindingItem.when) {
-					return index;
-				}
-				if (keybinding.when && keybindingItem.when) {
-					const contextKeyExpr = ContextKeyExpr.deserialize(keybinding.when);
-					if (contextKeyExpr && contextKeyExpr.serialize() === keybindingItem.when.serialize()) {
-						return index;
-					}
-				}
-			}
-		}
-		return -1;
+		const key = keybindingItem.resolvedKeybinding?.getUserSettingsLabel();
+		return userKeybindingEntries.findLastIndex(entry =>
+			entry.command === keybindingItem.command
+			&& ContextKeyExpr.deserialize(entry.when)?.serialize() === keybindingItem.when?.serialize()
+			&& objects.equals(entry.args ?? undefined, keybindingItem.commandArgs ?? undefined)
+			&& !!entry.systemWide === keybindingItem.systemWide
+			&& (!key || this.keybindingService.resolveUserBinding(entry.key).some(binding => binding.getUserSettingsLabel() === key))
+		);
 	}
 
 	private findUnassignedDefaultKeybindingEntryIndex(keybindingItem: ResolvedKeybindingItem, userKeybindingEntries: IUserFriendlyKeybinding[]): number[] {
@@ -200,13 +195,19 @@ export class KeybindingsEditingService extends Disposable implements IKeybinding
 		return indices;
 	}
 
-	private asObject(key: string, command: string | null, when: string | undefined, negate: boolean): any {
+	private asObject(key: string, command: string | null, when: string | undefined, negate: boolean, args?: unknown, systemWide?: boolean): IUserFriendlyKeybinding {
 		const object: any = { key };
 		if (command) {
 			object['command'] = negate ? `-${command}` : command;
 		}
 		if (when) {
 			object['when'] = when;
+		}
+		if (args !== undefined && args !== null) {
+			object['args'] = args;
+		}
+		if (systemWide) {
+			object['systemWide'] = true;
 		}
 		return object;
 	}

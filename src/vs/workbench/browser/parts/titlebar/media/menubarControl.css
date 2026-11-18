@@ -16,7 +16,7 @@
 .monaco-workbench .activitybar .menubar.compact > .menubar-menu-button.open,
 .monaco-workbench .activitybar .menubar.compact > .menubar-menu-button:focus,
 .monaco-workbench .activitybar .menubar.compact:not(:focus-within) > .menubar-menu-button:hover,
-.monaco-workbench .activitybar .menubar.compact  > .menubar-menu-button.open .toolbar-toggle-more,
+.monaco-workbench .activitybar .menubar.compact > .menubar-menu-button.open .toolbar-toggle-more,
 .monaco-workbench .activitybar .menubar.compact > .menubar-menu-button:focus .toolbar-toggle-more,
 .monaco-workbench .activitybar .menubar.compact:not(:focus-within) > .menubar-menu-button:hover .toolbar-toggle-more {
 	color: var(--vscode-activityBar-foreground);
@@ -26,8 +26,18 @@
 	background-color: var(--vscode-menubar-selectionBackground);
 }
 
+.monaco-workbench .part.titlebar .menubar.compact > .menubar-menu-button.open,
+.monaco-workbench .part.titlebar .menubar.compact > .menubar-menu-button:focus {
+	background-color: var(--vscode-menubar-selectionBackground);
+}
+
+/* The compact menu opens over the title bar's drag region, so it must not drag the window */
+.monaco-workbench .part.titlebar .menubar.compact .menubar-menu-items-holder {
+	-webkit-app-region: no-drag;
+}
+
 .monaco-workbench .menubar.inactive:not(.compact) > .menubar-menu-button,
-.monaco-workbench .menubar.inactive:not(.compact) > .menubar-menu-button .toolbar-toggle-more  {
+.monaco-workbench .menubar.inactive:not(.compact) > .menubar-menu-button .toolbar-toggle-more {
 	color: var(--vscode-titleBar-inactiveForeground);
 }
 
@@ -46,7 +56,7 @@
 	background-color: var(--vscode-menubar-selectionBackground);
 }
 
-.monaco-workbench .menubar > .menubar-menu-button:hover .menubar-menu-title  {
+.monaco-workbench .menubar > .menubar-menu-button:hover .menubar-menu-title {
 	outline: dashed 1px var(--vscode-menubar-selectionBorder);
 }
 
@@ -61,5 +71,3 @@
 	outline-color: var(--vscode-menubar-selectionBorder);
 	outline-offset: -1px;
 }
-
-

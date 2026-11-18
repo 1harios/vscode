@@ -2,9 +2,9 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-import { PreTrie, ExplorerFileNestingTrie, SufTrie } from 'vs/workbench/contrib/files/common/explorerFileNestingTrie';
-import * as assert from 'assert';
-import { ensureNoDisposablesAreLeakedInTestSuite } from 'vs/base/test/common/utils';
+import { PreTrie, ExplorerFileNestingTrie, SufTrie } from '../../common/explorerFileNestingTrie.js';
+import assert from 'assert';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 
 const fakeFilenameAttributes = { dirname: 'mydir', basename: '', extname: '' };
 
@@ -440,6 +440,25 @@ suite('StarTrie', () => {
 			'other.file': [],
 			'some.thing': [],
 			'some.thing.else': [],
+		});
+	});
+
+	test('multiple child patterns matching the parent itself', () => {
+		const t = new ExplorerFileNestingTrie([
+			['*', ['${basename}.*', '${basename}*.${extname}']],
+		]);
+
+		const nesting1 = t.nest([
+			'Button.tsx',
+			'Button.test.tsx',
+			'Button.module.css',
+			'ButtonGroup.tsx',
+			'other.ts',
+		], 'mydir');
+
+		assertMapEquals(nesting1, {
+			'Button.tsx': ['Button.test.tsx', 'Button.module.css', 'ButtonGroup.tsx'],
+			'other.ts': [],
 		});
 	});
 

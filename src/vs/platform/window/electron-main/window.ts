@@ -3,15 +3,17 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { BrowserWindow, Rectangle, screen, WebContents } from 'electron';
-import { CancellationToken } from 'vs/base/common/cancellation';
-import { Event } from 'vs/base/common/event';
-import { IDisposable } from 'vs/base/common/lifecycle';
-import { ISerializableCommandAction } from 'vs/platform/action/common/action';
-import { NativeParsedArgs } from 'vs/platform/environment/common/argv';
-import { IUserDataProfile } from 'vs/platform/userDataProfile/common/userDataProfile';
-import { INativeWindowConfiguration } from 'vs/platform/window/common/window';
-import { ISingleFolderWorkspaceIdentifier, IWorkspaceIdentifier } from 'vs/platform/workspace/common/workspace';
+import electron from 'electron';
+import { CancellationToken } from '../../../base/common/cancellation.js';
+import { Event } from '../../../base/common/event.js';
+import { IDisposable } from '../../../base/common/lifecycle.js';
+import { URI } from '../../../base/common/uri.js';
+import { ISerializableCommandAction } from '../../action/common/action.js';
+import { NativeParsedArgs } from '../../environment/common/argv.js';
+import { FocusMode, IApplicationBadge } from '../../native/common/native.js';
+import { IUserDataProfile } from '../../userDataProfile/common/userDataProfile.js';
+import { ISingleFolderWorkspaceIdentifier, IWorkspaceIdentifier } from '../../workspace/common/workspace.js';
+import { DEFAULT_AUX_WINDOW_SIZE, DEFAULT_EMPTY_WINDOW_SIZE, DEFAULT_WORKSPACE_WINDOW_SIZE, INativeWindowConfiguration } from '../common/window.js';
 
 export interface IBaseWindow extends IDisposable {
 
@@ -23,10 +25,10 @@ export interface IBaseWindow extends IDisposable {
 	readonly onDidClose: Event<void>;
 
 	readonly id: number;
-	readonly win: BrowserWindow | null;
+	readonly win: electron.BrowserWindow | null;
 
 	readonly lastFocusTime: number;
-	focus(options?: { force: boolean }): void;
+	focus(options?: { mode: FocusMode }): void;
 
 	setRepresentedFilename(name: string): void;
 	getRepresentedFilename(): string | undefined;
@@ -34,14 +36,17 @@ export interface IBaseWindow extends IDisposable {
 	setDocumentEdited(edited: boolean): void;
 	isDocumentEdited(): boolean;
 
-	handleTitleDoubleClick(): void;
+	setApplicationBadge(badge: IApplicationBadge | undefined): void;
 
 	readonly isFullScreen: boolean;
 	toggleFullScreen(): void;
 
-	updateWindowControls(options: { height?: number; backgroundColor?: string; foregroundColor?: string }): void;
+	/** Does what a double-click on the title bar of the window does, as the system settings say. */
+	handleTitleDoubleClick(): void;
 
-	matches(webContents: WebContents): boolean;
+	updateWindowControls(options: { height?: number; horizontalInset?: number; backgroundColor?: string; foregroundColor?: string; dimmed?: boolean }): void;
+
+	matches(webContents: electron.WebContents): boolean;
 }
 
 export interface ICodeWindow extends IBaseWindow {
@@ -62,6 +67,8 @@ export interface ICodeWindow extends IBaseWindow {
 
 	readonly remoteAuthority?: string;
 
+	readonly iconPath?: URI;
+
 	readonly isExtensionDevelopmentHost: boolean;
 	readonly isExtensionTestHost: boolean;
 
@@ -76,16 +83,20 @@ export interface ICodeWindow extends IBaseWindow {
 
 	close(): void;
 
-	getBounds(): Rectangle;
+	getBounds(): electron.Rectangle;
 
-	send(channel: string, ...args: any[]): void;
-	sendWhenReady(channel: string, token: CancellationToken, ...args: any[]): void;
+	send(channel: string, ...args: unknown[]): void;
+	sendWhenReady(channel: string, token: CancellationToken, ...args: unknown[]): void;
 
 	updateTouchBar(items: ISerializableCommandAction[][]): void;
 
 	notifyZoomLevel(zoomLevel: number | undefined): void;
 
-	serializeWindowState(): IWindowState;
+	/**
+	 * @param options.exact the windows will be restored exactly as they are, so the state
+	 * also records whether the window is minimized, and if so, whether it is maximized.
+	 */
+	serializeWindowState(options?: { readonly exact?: boolean }): IWindowState;
 }
 
 export const enum LoadReason {
@@ -136,13 +147,22 @@ export interface IWindowState {
 	y?: number;
 	mode?: WindowMode;
 	zoomLevel?: number;
+	/** Restores this window's always-on-top state independently of other windows. */
+	alwaysOnTop?: boolean;
 	readonly display?: number;
+
+	/**
+	 * Whether the window is minimized. Only recorded and restored when the application
+	 * restores its windows exactly, after an unattended update restart.
+	 */
+	minimized?: boolean;
 }
 
-export const defaultWindowState = function (mode = WindowMode.Normal): IWindowState {
+export const defaultWindowState = function (mode = WindowMode.Normal, hasWorkspace = false): IWindowState {
+	const size = hasWorkspace ? DEFAULT_WORKSPACE_WINDOW_SIZE : DEFAULT_EMPTY_WINDOW_SIZE;
 	return {
-		width: 1024,
-		height: 768,
+		width: size.width,
+		height: size.height,
 		mode
 	};
 };
@@ -156,9 +176,9 @@ export const defaultAuxWindowState = function (): IWindowState {
 	// we need to set not only width and height but also x and y to
 	// a good location on the primary display.
 
-	const width = 800;
-	const height = 600;
-	const workArea = screen.getPrimaryDisplay().workArea;
+	const width = DEFAULT_AUX_WINDOW_SIZE.width;
+	const height = DEFAULT_AUX_WINDOW_SIZE.height;
+	const workArea = electron.screen.getPrimaryDisplay().workArea;
 	const x = Math.max(workArea.x + (workArea.width / 2) - (width / 2), 0);
 	const y = Math.max(workArea.y + (workArea.height / 2) - (height / 2), 0);
 
@@ -198,5 +218,10 @@ export const enum WindowError {
 	/**
 	 * Maps to the `did-fail-load` event on a `WebContents`.
 	 */
-	LOAD = 3
+	LOAD = 3,
+
+	/**
+	 * Maps to the `responsive` event on a `BrowserWindow`.
+	 */
+	RESPONSIVE = 4,
 }

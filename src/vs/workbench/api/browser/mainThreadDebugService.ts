@@ -3,23 +3,23 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { DisposableMap, DisposableStore, IDisposable, toDisposable } from 'vs/base/common/lifecycle';
-import { URI as uri, UriComponents } from 'vs/base/common/uri';
-import { IDebugService, IConfig, IDebugConfigurationProvider, IBreakpoint, IFunctionBreakpoint, IBreakpointData, IDebugAdapter, IDebugAdapterDescriptorFactory, IDebugSession, IDebugAdapterFactory, IDataBreakpoint, IDebugSessionOptions, IInstructionBreakpoint, DebugConfigurationProviderTriggerKind, IDebugVisualization, DataBreakpointSetType } from 'vs/workbench/contrib/debug/common/debug';
+import { DisposableMap, DisposableStore, IDisposable, toDisposable } from '../../../base/common/lifecycle.js';
+import { URI as uri, UriComponents } from '../../../base/common/uri.js';
+import { IDebugService, IConfig, IDebugConfigurationProvider, IBreakpoint, IFunctionBreakpoint, IBreakpointData, IDebugAdapter, IDebugAdapterDescriptorFactory, IDebugSession, IDebugAdapterFactory, IDataBreakpoint, IDebugSessionOptions, IInstructionBreakpoint, DebugConfigurationProviderTriggerKind, IDebugVisualization, DataBreakpointSetType } from '../../contrib/debug/common/debug.js';
 import {
 	ExtHostContext, ExtHostDebugServiceShape, MainThreadDebugServiceShape, DebugSessionUUID, MainContext,
 	IBreakpointsDeltaDto, ISourceMultiBreakpointDto, ISourceBreakpointDto, IFunctionBreakpointDto, IDebugSessionDto, IDataBreakpointDto, IStartDebuggingOptions, IDebugConfiguration, IThreadFocusDto, IStackFrameFocusDto
-} from 'vs/workbench/api/common/extHost.protocol';
-import { extHostNamedCustomer, IExtHostContext } from 'vs/workbench/services/extensions/common/extHostCustomers';
-import severity from 'vs/base/common/severity';
-import { AbstractDebugAdapter } from 'vs/workbench/contrib/debug/common/abstractDebugAdapter';
-import { IWorkspaceFolder } from 'vs/platform/workspace/common/workspace';
-import { convertToVSCPaths, convertToDAPaths, isSessionAttach } from 'vs/workbench/contrib/debug/common/debugUtils';
-import { ErrorNoTelemetry } from 'vs/base/common/errors';
-import { IDebugVisualizerService } from 'vs/workbench/contrib/debug/common/debugVisualizers';
-import { ExtensionIdentifier } from 'vs/platform/extensions/common/extensions';
-import { Event } from 'vs/base/common/event';
-import { isDefined } from 'vs/base/common/types';
+} from '../common/extHost.protocol.js';
+import { extHostNamedCustomer, IExtHostContext } from '../../services/extensions/common/extHostCustomers.js';
+import severity from '../../../base/common/severity.js';
+import { AbstractDebugAdapter } from '../../contrib/debug/common/abstractDebugAdapter.js';
+import { IWorkspaceFolder } from '../../../platform/workspace/common/workspace.js';
+import { convertToVSCPaths, convertToDAPaths, isSessionAttach } from '../../contrib/debug/common/debugUtils.js';
+import { ErrorNoTelemetry } from '../../../base/common/errors.js';
+import { IDebugVisualizerService } from '../../contrib/debug/common/debugVisualizers.js';
+import { ExtensionIdentifier } from '../../../platform/extensions/common/extensions.js';
+import { Event } from '../../../base/common/event.js';
+import { isDefined } from '../../../base/common/types.js';
 
 @extHostNamedCustomer(MainContext.MainThreadDebugService)
 export class MainThreadDebugService implements MainThreadDebugServiceShape, IDebugAdapterFactory {
@@ -28,8 +28,8 @@ export class MainThreadDebugService implements MainThreadDebugServiceShape, IDeb
 	private readonly _toDispose = new DisposableStore();
 	private readonly _debugAdapters: Map<number, ExtensionHostDebugAdapter>;
 	private _debugAdaptersHandleCounter = 1;
-	private readonly _debugConfigurationProviders: Map<number, IDebugConfigurationProvider>;
-	private readonly _debugAdapterDescriptorFactories: Map<number, IDebugAdapterDescriptorFactory>;
+	private readonly _debugConfigurationProviders = this._toDispose.add(new DisposableMap<number>());
+	private readonly _debugAdapterDescriptorFactories = this._toDispose.add(new DisposableMap<number>());
 	private readonly _extHostKnownSessions: Set<DebugSessionUUID>;
 	private readonly _visualizerHandles = new Map<string, IDisposable>();
 	private readonly _visualizerTreeHandles = new Map<string, IDisposable>();
@@ -46,7 +46,7 @@ export class MainThreadDebugService implements MainThreadDebugServiceShape, IDeb
 		this._toDispose.add(debugService.onDidNewSession(session => {
 			this._proxy.$acceptDebugSessionStarted(this.getSessionDto(session));
 			const store = sessionListeners.get(session);
-			store!.add(session.onDidChangeName(name => {
+			store?.add(session.onDidChangeName(name => {
 				this._proxy.$acceptDebugSessionNameChanged(this.getSessionDto(session), name);
 			}));
 		}));
@@ -86,8 +86,6 @@ export class MainThreadDebugService implements MainThreadDebugServiceShape, IDeb
 		}));
 
 		this._debugAdapters = new Map();
-		this._debugConfigurationProviders = new Map();
-		this._debugAdapterDescriptorFactories = new Map();
 		this._extHostKnownSessions = new Set();
 
 		const viewModel = this.debugService.getViewModel();
@@ -116,12 +114,12 @@ export class MainThreadDebugService implements MainThreadDebugServiceShape, IDeb
 	}
 
 	$registerDebugVisualizerTree(treeId: string, canEdit: boolean): void {
-		this.visualizerService.registerTree(treeId, {
+		this._visualizerTreeHandles.set(treeId, this.visualizerService.registerTree(treeId, {
 			disposeItem: id => this._proxy.$disposeVisualizedTree(id),
 			getChildren: e => this._proxy.$getVisualizerTreeItemChildren(treeId, e),
 			getTreeItem: e => this._proxy.$getVisualizerTreeItem(treeId, e),
 			editItem: canEdit ? ((e, v) => this._proxy.$editVisualizerTreeItem(e, v)) : undefined
-		});
+		}));
 	}
 
 	$unregisterDebugVisualizerTree(treeId: string): void {
@@ -273,18 +271,13 @@ export class MainThreadDebugService implements MainThreadDebugServiceShape, IDeb
 				return this._proxy.$resolveDebugConfigurationWithSubstitutedVariables(handle, folder, config, token);
 			};
 		}
-		this._debugConfigurationProviders.set(handle, provider);
-		this._toDispose.add(this.debugService.getConfigurationManager().registerDebugConfigurationProvider(provider));
+		this._debugConfigurationProviders.set(handle, this.debugService.getConfigurationManager().registerDebugConfigurationProvider(provider));
 
 		return Promise.resolve(undefined);
 	}
 
 	public $unregisterDebugConfigurationProvider(handle: number): void {
-		const provider = this._debugConfigurationProviders.get(handle);
-		if (provider) {
-			this._debugConfigurationProviders.delete(handle);
-			this.debugService.getConfigurationManager().unregisterDebugConfigurationProvider(provider);
-		}
+		this._debugConfigurationProviders.deleteAndDispose(handle);
 	}
 
 	public $registerDebugAdapterDescriptorFactory(debugType: string, handle: number): Promise<void> {
@@ -295,18 +288,13 @@ export class MainThreadDebugService implements MainThreadDebugServiceShape, IDeb
 				return Promise.resolve(this._proxy.$provideDebugAdapter(handle, this.getSessionDto(session)));
 			}
 		};
-		this._debugAdapterDescriptorFactories.set(handle, provider);
-		this._toDispose.add(this.debugService.getAdapterManager().registerDebugAdapterDescriptorFactory(provider));
+		this._debugAdapterDescriptorFactories.set(handle, this.debugService.getAdapterManager().registerDebugAdapterDescriptorFactory(provider));
 
 		return Promise.resolve(undefined);
 	}
 
 	public $unregisterDebugAdapterDescriptorFactory(handle: number): void {
-		const provider = this._debugAdapterDescriptorFactories.get(handle);
-		if (provider) {
-			this._debugAdapterDescriptorFactories.delete(handle);
-			this.debugService.getAdapterManager().unregisterDebugAdapterDescriptorFactory(provider);
-		}
+		this._debugAdapterDescriptorFactories.deleteAndDispose(handle);
 	}
 
 	private getSession(sessionId: DebugSessionUUID | undefined): IDebugSession | undefined {
@@ -329,6 +317,7 @@ export class MainThreadDebugService implements MainThreadDebugServiceShape, IDeb
 			compact: options.compact,
 			compoundRoot: parentSession?.compoundRoot,
 			saveBeforeRestart: saveBeforeStart,
+			testRun: options.testRun,
 
 			suppressDebugStatusbar: options.suppressDebugStatusbar,
 			suppressDebugToolbar: options.suppressDebugToolbar,
@@ -346,7 +335,7 @@ export class MainThreadDebugService implements MainThreadDebugServiceShape, IDeb
 		session?.setName(name);
 	}
 
-	public $customDebugAdapterRequest(sessionId: DebugSessionUUID, request: string, args: any): Promise<any> {
+	public $customDebugAdapterRequest(sessionId: DebugSessionUUID, request: string, args: unknown): Promise<unknown> {
 		const session = this.debugService.getModel().getSession(sessionId, true);
 		if (session) {
 			return session.customRequest(request, args).then(response => {
@@ -387,7 +376,8 @@ export class MainThreadDebugService implements MainThreadDebugServiceShape, IDeb
 	}
 
 	public $acceptDAMessage(handle: number, message: DebugProtocol.ProtocolMessage) {
-		this.getDebugAdapter(handle).acceptMessage(convertToVSCPaths(message, false));
+		// don't use getDebugAdapter since a message can still be in-flight after the adapter was removed on session end
+		this._debugAdapters.get(handle)?.acceptMessage(convertToVSCPaths(message, false));
 	}
 
 	public $acceptDAError(handle: number, name: string, message: string, stack: string) {
@@ -396,15 +386,8 @@ export class MainThreadDebugService implements MainThreadDebugServiceShape, IDeb
 	}
 
 	public $acceptDAExit(handle: number, code: number, signal: string) {
-		this.getDebugAdapter(handle).fireExit(handle, code, signal);
-	}
-
-	private getDebugAdapter(handle: number): ExtensionHostDebugAdapter {
-		const adapter = this._debugAdapters.get(handle);
-		if (!adapter) {
-			throw new Error('Invalid debug adapter');
-		}
-		return adapter;
+		// don't use getDebugAdapter since an error can be expected on a post-close
+		this._debugAdapters.get(handle)?.fireExit(handle, code, signal);
 	}
 
 	// dto helpers
@@ -420,7 +403,7 @@ export class MainThreadDebugService implements MainThreadDebugServiceShape, IDeb
 	getSessionDto(session: IDebugSession | undefined): IDebugSessionDto | undefined;
 	getSessionDto(session: IDebugSession | undefined): IDebugSessionDto | undefined {
 		if (session) {
-			const sessionID = <DebugSessionUUID>session.getId();
+			const sessionID = session.getId();
 			if (this._extHostKnownSessions.has(sessionID)) {
 				return sessionID;
 			} else {

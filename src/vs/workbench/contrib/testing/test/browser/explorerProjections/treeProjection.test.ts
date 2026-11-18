@@ -3,16 +3,22 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as assert from 'assert';
-import { Emitter } from 'vs/base/common/event';
-import { DisposableStore } from 'vs/base/common/lifecycle';
-import { ensureNoDisposablesAreLeakedInTestSuite } from 'vs/base/test/common/utils';
-import { TreeProjection } from 'vs/workbench/contrib/testing/browser/explorerProjections/treeProjection';
-import { TestId } from 'vs/workbench/contrib/testing/common/testId';
-import { TestResultItemChange, TestResultItemChangeReason } from 'vs/workbench/contrib/testing/common/testResult';
-import { TestDiffOpType, TestItemExpandState, TestResultItem, TestResultState } from 'vs/workbench/contrib/testing/common/testTypes';
-import { TestTreeTestHarness } from 'vs/workbench/contrib/testing/test/browser/testObjectTree';
-import { TestTestItem } from 'vs/workbench/contrib/testing/test/common/testStubs';
+import assert from 'assert';
+import sinon from 'sinon';
+import { Emitter, Event } from '../../../../../../base/common/event.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
+import { MockContextKeyService } from '../../../../../../platform/keybinding/test/common/mockKeybindingService.js';
+import { NullTelemetryService } from '../../../../../../platform/telemetry/common/telemetryUtils.js';
+import { TreeProjection } from '../../../browser/explorerProjections/treeProjection.js';
+import { TestId } from '../../../common/testId.js';
+import { TestResultItemChange, TestResultItemChangeReason } from '../../../common/testResult.js';
+import { TestDiffOpType, TestItemExpandState, TestResultItem, TestResultState, TestRunProfileBitset } from '../../../common/testTypes.js';
+import { TestTreeTestHarness } from '../testObjectTree.js';
+import { TestTestItem } from '../../common/testStubs.js';
+import { upcastPartial } from '../../../../../../base/test/common/mock.js';
+import { ITestResultService, TestResultService } from '../../../common/testResultService.js';
+import { ITestResultStorage } from '../../../common/testResultStorage.js';
+import { ITestProfileService } from '../../../common/testProfileService.js';
 
 class TestHierarchicalByLocationProjection extends TreeProjection {
 }
@@ -20,26 +26,20 @@ class TestHierarchicalByLocationProjection extends TreeProjection {
 suite('Workbench - Testing Explorer Hierarchal by Location Projection', () => {
 	let harness: TestTreeTestHarness<TestHierarchicalByLocationProjection>;
 	let onTestChanged: Emitter<TestResultItemChange>;
-	let resultsService: any;
-	let ds: DisposableStore;
-
-	teardown(() => {
-		ds.dispose();
-	});
-
-	ensureNoDisposablesAreLeakedInTestSuite();
+	let resultsService: ITestResultService;
+	teardown(() => sinon.restore());
+	const ds = ensureNoDisposablesAreLeakedInTestSuite();
 
 	setup(() => {
-		ds = new DisposableStore();
 		onTestChanged = ds.add(new Emitter());
-		resultsService = {
+		resultsService = upcastPartial<ITestResultService>({
 			results: [],
-			onResultsChanged: () => undefined,
+			onResultsChanged: Event.None,
 			onTestChanged: onTestChanged.event,
-			getStateById: () => ({ state: { state: 0 }, computedState: 0 }),
-		};
+			getStateById: () => undefined,
+		});
 
-		harness = ds.add(new TestTreeTestHarness(l => new TestHierarchicalByLocationProjection({}, l, resultsService as any)));
+		harness = ds.add(new TestTreeTestHarness(l => new TestHierarchicalByLocationProjection({}, l, resultsService)));
 	});
 
 	test('renders initial tree', async () => {
@@ -130,10 +130,10 @@ suite('Workbench - Testing Explorer Hierarchal by Location Projection', () => {
 		});
 
 		// Applies the change:
-		resultsService.getStateById = () => [undefined, resultInState(TestResultState.Queued)];
+		resultsService.getStateById = () => [undefined!, resultInState(TestResultState.Queued)];
 		onTestChanged.fire({
 			reason: TestResultItemChangeReason.OwnStateChange,
-			result: null as any,
+			result: undefined!,
 			previousState: TestResultState.Unset,
 			item: resultInState(TestResultState.Queued),
 			previousOwnDuration: undefined,
@@ -146,10 +146,10 @@ suite('Workbench - Testing Explorer Hierarchal by Location Projection', () => {
 		]);
 
 		// Falls back if moved into unset state:
-		resultsService.getStateById = () => [undefined, resultInState(TestResultState.Failed)];
+		resultsService.getStateById = () => [undefined!, resultInState(TestResultState.Failed)];
 		onTestChanged.fire({
 			reason: TestResultItemChangeReason.OwnStateChange,
-			result: null as any,
+			result: undefined!,
 			previousState: TestResultState.Queued,
 			item: resultInState(TestResultState.Unset),
 			previousOwnDuration: undefined,
@@ -162,6 +162,56 @@ suite('Workbench - Testing Explorer Hierarchal by Location Projection', () => {
 		]);
 	});
 
+	test('does not recompute children for a computed state notification', () => {
+		harness.flush();
+		const parent = harness.projection.getElementByTestId('ctrlId\0id-a')!;
+		harness.tree.expand(parent);
+		harness.flush();
+		const child = harness.projection.getElementByTestId('ctrlId\0id-a\0id-aa')!;
+		onTestChanged.fire({
+			reason: TestResultItemChangeReason.OwnStateChange,
+			result: undefined!,
+			previousState: TestResultState.Unset,
+			previousOwnDuration: undefined,
+			item: { ...child.test, tasks: [], ownComputedState: TestResultState.Running, computedState: TestResultState.Running },
+		});
+
+		const children = sinon.spy(parent.children, 'values');
+		try {
+			onTestChanged.fire({
+				reason: TestResultItemChangeReason.ComputedStateChange,
+				result: undefined!,
+				item: { ...parent.test, tasks: [], ownComputedState: TestResultState.Unset, computedState: TestResultState.Running, retired: true },
+			});
+			assert.deepStrictEqual({ state: parent.state, retired: parent.retired, scans: children.callCount }, { state: TestResultState.Running, retired: true, scans: 0 });
+		} finally {
+			children.restore();
+		}
+	});
+
+	test('updates durations after removing a child with a zero duration', () => {
+		harness.flush();
+		const parent = harness.projection.getElementByTestId('ctrlId\0id-a')!;
+		harness.tree.expand(parent);
+		harness.flush();
+		const first = harness.projection.getElementByTestId('ctrlId\0id-a\0id-aa')!;
+		const second = harness.projection.getElementByTestId('ctrlId\0id-a\0id-ab')!;
+		const updateDuration = (item: typeof first, ownDuration: number | undefined, previousOwnDuration?: number) => onTestChanged.fire({
+			reason: TestResultItemChangeReason.OwnStateChange,
+			result: undefined!,
+			previousState: TestResultState.Passed,
+			previousOwnDuration,
+			item: { ...item.test, tasks: [], ownComputedState: TestResultState.Passed, computedState: TestResultState.Passed, ownDuration },
+		});
+		updateDuration(first, 0);
+		harness.c.root.children.get('id-a')!.children.delete('id-aa');
+		harness.flush();
+		assert.strictEqual(parent.duration, undefined);
+		updateDuration(second, 2);
+		updateDuration(second, undefined, 2);
+		assert.strictEqual(parent.duration, undefined);
+	});
+
 	test('applies test changes (resort)', async () => {
 		harness.flush();
 		harness.tree.expand(harness.projection.getElementByTestId(new TestId(['ctrlId', 'id-a']).toString())!);
@@ -171,10 +221,10 @@ suite('Workbench - Testing Explorer Hierarchal by Location Projection', () => {
 		// sortText causes order to change
 		harness.pushDiff({
 			op: TestDiffOpType.Update,
-			item: { extId: new TestId(['ctrlId', 'id-a', 'id-aa']).toString(), item: { sortText: "z" } }
+			item: { extId: new TestId(['ctrlId', 'id-a', 'id-aa']).toString(), item: { sortText: 'z' } }
 		}, {
 			op: TestDiffOpType.Update,
-			item: { extId: new TestId(['ctrlId', 'id-a', 'id-ab']).toString(), item: { sortText: "a" } }
+			item: { extId: new TestId(['ctrlId', 'id-a', 'id-ab']).toString(), item: { sortText: 'a' } }
 		});
 		assert.deepStrictEqual(harness.flush(), [
 			{ e: 'a', children: [{ e: 'ab' }, { e: 'aa' }] }, { e: 'b' }
@@ -182,20 +232,20 @@ suite('Workbench - Testing Explorer Hierarchal by Location Projection', () => {
 		// label causes order to change
 		harness.pushDiff({
 			op: TestDiffOpType.Update,
-			item: { extId: new TestId(['ctrlId', 'id-a', 'id-aa']).toString(), item: { sortText: undefined, label: "z" } }
+			item: { extId: new TestId(['ctrlId', 'id-a', 'id-aa']).toString(), item: { sortText: undefined, label: 'z' } }
 		}, {
 			op: TestDiffOpType.Update,
-			item: { extId: new TestId(['ctrlId', 'id-a', 'id-ab']).toString(), item: { sortText: undefined, label: "a" } }
+			item: { extId: new TestId(['ctrlId', 'id-a', 'id-ab']).toString(), item: { sortText: undefined, label: 'a' } }
 		});
 		assert.deepStrictEqual(harness.flush(), [
 			{ e: 'a', children: [{ e: 'a' }, { e: 'z' }] }, { e: 'b' }
 		]);
 		harness.pushDiff({
 			op: TestDiffOpType.Update,
-			item: { extId: new TestId(['ctrlId', 'id-a', 'id-aa']).toString(), item: { label: "a2" } }
+			item: { extId: new TestId(['ctrlId', 'id-a', 'id-aa']).toString(), item: { label: 'a2' } }
 		}, {
 			op: TestDiffOpType.Update,
-			item: { extId: new TestId(['ctrlId', 'id-a', 'id-ab']).toString(), item: { label: "z2" } }
+			item: { extId: new TestId(['ctrlId', 'id-a', 'id-ab']).toString(), item: { label: 'z2' } }
 		});
 		assert.deepStrictEqual(harness.flush(), [
 			{ e: 'a', children: [{ e: 'a2' }, { e: 'z2' }] }, { e: 'b' }
@@ -210,7 +260,7 @@ suite('Workbench - Testing Explorer Hierarchal by Location Projection', () => {
 		// sortText causes order to change
 		harness.pushDiff({
 			op: TestDiffOpType.Update,
-			item: { extId: new TestId(['ctrlId', 'id-a']).toString(), item: { error: "bad" } }
+			item: { extId: new TestId(['ctrlId', 'id-a']).toString(), item: { error: 'bad' } }
 		});
 		assert.deepStrictEqual(harness.flush(), [
 			{ e: 'a' }, { e: 'b' }
@@ -221,7 +271,7 @@ suite('Workbench - Testing Explorer Hierarchal by Location Projection', () => {
 		]);
 		harness.pushDiff({
 			op: TestDiffOpType.Update,
-			item: { extId: new TestId(['ctrlId', 'id-a']).toString(), item: { error: "badder" } }
+			item: { extId: new TestId(['ctrlId', 'id-a']).toString(), item: { error: 'badder' } }
 		});
 		assert.deepStrictEqual(harness.flush(), [
 			{ e: 'a', children: [{ e: 'badder' }, { e: 'aa' }, { e: 'ab' }] }, { e: 'b' }
@@ -267,5 +317,140 @@ suite('Workbench - Testing Explorer Hierarchal by Location Projection', () => {
 		]);
 	});
 
+	test('fixes #213316 (single root)', async () => {
+		harness.flush();
+		assert.deepStrictEqual(harness.tree.getRendered(), [
+			{ e: 'a' }, { e: 'b' }
+		]);
+		harness.pushDiff({
+			op: TestDiffOpType.Remove,
+			itemId: new TestId(['ctrlId', 'id-a']).toString(),
+		});
+		harness.flush();
+		assert.deepStrictEqual(harness.tree.getRendered(), [
+			{ e: 'b' }
+		]);
+	});
+
+	test('fixes #213316 (multi root)', async () => {
+		harness.pushDiff({
+			op: TestDiffOpType.Add,
+			item: { controllerId: 'ctrl2', expand: TestItemExpandState.Expanded, item: new TestTestItem(new TestId(['ctrlId2']), 'c').toTestItem() },
+		}, {
+			op: TestDiffOpType.Add,
+			item: { controllerId: 'ctrl2', expand: TestItemExpandState.NotExpandable, item: new TestTestItem(new TestId(['ctrlId2', 'id-c']), 'ca').toTestItem() },
+		});
+		harness.flush();
+		assert.deepStrictEqual(harness.flush(), [
+			{ e: 'c', children: [{ e: 'ca' }] },
+			{ e: 'root', children: [{ e: 'a' }, { e: 'b' }] }
+		]);
+
+		harness.pushDiff({
+			op: TestDiffOpType.Remove,
+			itemId: new TestId(['ctrlId', 'id-a']).toString(),
+		});
+		harness.flush();
+		assert.deepStrictEqual(harness.tree.getRendered(), [
+			{ e: 'c', children: [{ e: 'ca' }] },
+			{ e: 'root', children: [{ e: 'b' }] }
+		]);
+
+		harness.pushDiff({
+			op: TestDiffOpType.Remove,
+			itemId: new TestId(['ctrlId', 'id-b']).toString(),
+		});
+		harness.flush();
+		assert.deepStrictEqual(harness.tree.getRendered(), [
+			{ e: 'ca' }
+		]);
+	});
 });
 
+suite('Workbench - Testing Explorer result clearing', () => {
+	const ds = ensureNoDisposablesAreLeakedInTestSuite();
+
+	for (const completed of [false, true]) {
+		test(`recomputes suite state when clearing ${completed ? 'completed' : 'active'} results and retiring tests`, () => {
+			const results = ds.add(new TestResultService(
+				new MockContextKeyService(),
+				upcastPartial<ITestResultStorage>({ read: async () => [], persist: async () => { } }),
+				upcastPartial<ITestProfileService>({}),
+				NullTelemetryService,
+			));
+			const harness = ds.add(new TestTreeTestHarness(l => new TreeProjection({}, l, results)));
+			harness.flush();
+			const suite = harness.projection.getElementByTestId('ctrlId\0id-a')!;
+			harness.tree.expand(suite);
+			harness.flush();
+			const child = harness.projection.getElementByTestId('ctrlId\0id-a\0id-aa')!;
+			const root = harness.projection.getElementByTestId('ctrlId')!;
+			const result = ds.add(results.createLiveResult({ group: TestRunProfileBitset.Run, targets: [] }));
+			result.addTask({ id: 'task', name: 'task', running: true, ctrlId: 'ctrlId' });
+			result.addTestChainToRun('ctrlId', [root.test.item, suite.test.item, child.test.item]);
+			result.updateState(child.test.item.extId, 'task', TestResultState.Passed, 7);
+			if (completed) {
+				result.updateState(suite.test.item.extId, 'task', TestResultState.Passed, 11);
+				result.markComplete();
+			}
+
+			results.clear();
+			const afterClear = [suite.state, child.state, suite.duration, child.duration];
+			result.markRetired(undefined);
+			assert.deepStrictEqual({ afterClear, afterRetirement: [suite.state, child.state, suite.duration, child.duration] }, completed ? {
+				afterClear: [TestResultState.Unset, TestResultState.Unset, undefined, undefined],
+				afterRetirement: [TestResultState.Unset, TestResultState.Unset, undefined, undefined],
+			} : {
+				afterClear: [TestResultState.Passed, TestResultState.Passed, 7, 7],
+				afterRetirement: [TestResultState.Passed, TestResultState.Passed, 7, 7],
+			});
+		});
+	}
+});
+
+suite('Workbench - Testing Explorer result durations', () => {
+	const ds = ensureNoDisposablesAreLeakedInTestSuite();
+
+	for (const ownDuration of [0, 20]) {
+		test(`recomputes suite duration across results after an own duration of ${ownDuration}`, () => {
+			const results = ds.add(new TestResultService(
+				new MockContextKeyService(),
+				upcastPartial<ITestResultStorage>({ read: async () => [], persist: async () => { } }),
+				upcastPartial<ITestProfileService>({}),
+				NullTelemetryService,
+			));
+			const harness = ds.add(new TestTreeTestHarness(l => new TreeProjection({}, l, results)));
+			harness.flush();
+			const suite = harness.projection.getElementByTestId('ctrlId\0id-a')!;
+			harness.tree.expand(suite);
+			harness.flush();
+			const child = harness.projection.getElementByTestId('ctrlId\0id-a\0id-aa')!;
+			const root = harness.projection.getElementByTestId('ctrlId')!;
+			const createResult = () => {
+				const result = ds.add(results.createLiveResult({ group: TestRunProfileBitset.Run, targets: [] }));
+				result.addTask({ id: 'task', name: 'task', running: true, ctrlId: 'ctrlId' });
+				result.addTestChainToRun('ctrlId', [root.test.item, suite.test.item, child.test.item]);
+				result.updateState(suite.test.item.extId, 'task', TestResultState.Running);
+				return result;
+			};
+
+			const first = createResult();
+			first.updateState(child.test.item.extId, 'task', TestResultState.Passed, 5);
+			first.updateState(suite.test.item.extId, 'task', TestResultState.Passed, ownDuration);
+			first.markComplete();
+			const durations = [[suite.duration, child.duration]];
+
+			const second = createResult();
+			second.updateState(child.test.item.extId, 'task', TestResultState.Passed, 3);
+			durations.push([suite.duration, child.duration]);
+			second.markComplete();
+
+			const third = createResult();
+			third.updateState(child.test.item.extId, 'task', TestResultState.Passed, 4);
+			durations.push([suite.duration, child.duration]);
+			third.markComplete();
+
+			assert.deepStrictEqual(durations, [[ownDuration, 5], [3, 3], [4, 4]]);
+		});
+	}
+});

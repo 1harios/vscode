@@ -7,9 +7,12 @@ import { getLocation, JSONPath, parse, visit, Location } from 'jsonc-parser';
 import * as vscode from 'vscode';
 import { SettingsDocument } from './settingsDocumentHelper';
 import { provideInstalledExtensionProposals } from './extensionsProposals';
-import './importExportProfiles';
+import { registerGitHubGistProfileContentHandler } from './importExportProfiles';
 
 export function activate(context: vscode.ExtensionContext): void {
+	// GitHub gist profile import/export
+	context.subscriptions.push(registerGitHubGistProfileContentHandler());
+
 	//settings.json suggestions
 	context.subscriptions.push(registerSettingsCompletions());
 
@@ -62,6 +65,7 @@ function registerVariableCompletions(pattern: string): vscode.Disposable {
 					{ label: 'lineNumber', detail: vscode.l10n.t("The current selected line number in the active file") },
 					{ label: 'selectedText', detail: vscode.l10n.t("The current selected text in the active file") },
 					{ label: 'fileDirname', detail: vscode.l10n.t("The current opened file's dirname") },
+					{ label: 'fileDirnameBasename', detail: vscode.l10n.t("The current opened file's folder name") },
 					{ label: 'fileExtname', detail: vscode.l10n.t("The current opened file's extension") },
 					{ label: 'fileBasename', detail: vscode.l10n.t("The current opened file's basename") },
 					{ label: 'fileBasenameNoExtension', detail: vscode.l10n.t("The current opened file's basename with no file extension") },

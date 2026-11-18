@@ -3,44 +3,87 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { IThemeService } from 'vs/platform/theme/common/themeService';
-import { Part } from 'vs/workbench/browser/part';
-import { Dimension, $, EventHelper, addDisposableGenericMouseDownListener, getWindow, isAncestorOfActiveElement, getActiveElement, isHTMLElement } from 'vs/base/browser/dom';
-import { Event, Emitter, Relay, PauseableEmitter } from 'vs/base/common/event';
-import { contrastBorder, editorBackground } from 'vs/platform/theme/common/colorRegistry';
-import { GroupDirection, GroupsArrangement, GroupOrientation, IMergeGroupOptions, MergeGroupMode, GroupsOrder, GroupLocation, IFindGroupScope, EditorGroupLayout, GroupLayoutArgument, IEditorSideGroup, IEditorDropTargetDelegate, IEditorPart } from 'vs/workbench/services/editor/common/editorGroupsService';
-import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
-import { IView, orthogonal, LayoutPriority, IViewSize, Direction, SerializableGrid, Sizing, ISerializedGrid, ISerializedNode, Orientation, GridBranchNode, isGridBranchNode, GridNode, createSerializedGrid, Grid } from 'vs/base/browser/ui/grid/grid';
-import { GroupIdentifier, EditorInputWithOptions, IEditorPartOptions, IEditorPartOptionsChangeEvent, GroupModelChangeKind } from 'vs/workbench/common/editor';
-import { EDITOR_GROUP_BORDER, EDITOR_PANE_BACKGROUND } from 'vs/workbench/common/theme';
-import { distinct, coalesce } from 'vs/base/common/arrays';
-import { IEditorGroupView, getEditorPartOptions, impactsEditorPartOptions, IEditorPartCreationOptions, IEditorPartsView, IEditorGroupsView, IEditorGroupViewOptions } from 'vs/workbench/browser/parts/editor/editor';
-import { EditorGroupView } from 'vs/workbench/browser/parts/editor/editorGroupView';
-import { IConfigurationService, IConfigurationChangeEvent } from 'vs/platform/configuration/common/configuration';
-import { IDisposable, dispose, toDisposable, DisposableStore } from 'vs/base/common/lifecycle';
-import { IStorageService, IStorageValueChangeEvent, StorageScope, StorageTarget } from 'vs/platform/storage/common/storage';
-import { ISerializedEditorGroupModel, isSerializedEditorGroupModel } from 'vs/workbench/common/editor/editorGroupModel';
-import { EditorDropTarget } from 'vs/workbench/browser/parts/editor/editorDropTarget';
-import { Color } from 'vs/base/common/color';
-import { CenteredViewLayout } from 'vs/base/browser/ui/centered/centeredViewLayout';
-import { onUnexpectedError } from 'vs/base/common/errors';
-import { Parts, IWorkbenchLayoutService, Position } from 'vs/workbench/services/layout/browser/layoutService';
-import { DeepPartial, assertIsDefined, assertType } from 'vs/base/common/types';
-import { CompositeDragAndDropObserver } from 'vs/workbench/browser/dnd';
-import { DeferredPromise, Promises } from 'vs/base/common/async';
-import { findGroup } from 'vs/workbench/services/editor/common/editorGroupFinder';
-import { SIDE_GROUP } from 'vs/workbench/services/editor/common/editorService';
-import { IBoundarySashes } from 'vs/base/browser/ui/sash/sash';
-import { IHostService } from 'vs/workbench/services/host/browser/host';
-import { IContextKeyService } from 'vs/platform/contextkey/common/contextkey';
-import { ServiceCollection } from 'vs/platform/instantiation/common/serviceCollection';
-import { EditorPartMaximizedEditorGroupContext, EditorPartMultipleEditorGroupsContext, IsAuxiliaryEditorPartContext } from 'vs/workbench/common/contextkeys';
-import { mainWindow } from 'vs/base/browser/window';
+import { IThemeService } from '../../../../platform/theme/common/themeService.js';
+import { Part } from '../../part.js';
+import { Dimension, $, EventHelper, addDisposableGenericMouseDownListener, getWindow, isAncestorOfActiveElement, getActiveElement, isHTMLElement, computeScreenAwareSize } from '../../../../base/browser/dom.js';
+import { Event, Emitter, Relay, PauseableEmitter } from '../../../../base/common/event.js';
+import { contrastBorder, editorBackground } from '../../../../platform/theme/common/colorRegistry.js';
+import { GroupDirection, GroupsArrangement, GroupOrientation, IMergeGroupOptions, MergeGroupMode, GroupsOrder, GroupLocation, IFindGroupScope, EditorGroupLayout, GroupLayoutArgument, IEditorSideGroup, IEditorDropTargetDelegate, IEditorPart, GroupActivationReason, IEditorGroupActivationEvent } from '../../../services/editor/common/editorGroupsService.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { IView, orthogonal, LayoutPriority, IViewSize, Direction, SerializableGrid, Sizing, ISerializedGrid, ISerializedNode, Orientation, GridBranchNode, isGridBranchNode, GridNode, createSerializedGrid, Grid } from '../../../../base/browser/ui/grid/grid.js';
+import { GroupIdentifier, EditorInputWithOptions, IEditorPartOptions, IEditorPartOptionsChangeEvent, GroupModelChangeKind } from '../../../common/editor.js';
+import { EDITOR_GROUP_BORDER, EDITOR_PANE_BACKGROUND } from '../../../common/theme.js';
+import { distinct, coalesce } from '../../../../base/common/arrays.js';
+import { IEditorGroupView, getEditorPartOptions, impactsEditorPartOptions, IEditorPartCreationOptions, IEditorPartsView, IEditorGroupsView, IEditorGroupViewOptions, GroupTransferKind } from './editor.js';
+import { EditorGroupView } from './editorGroupView.js';
+import { IConfigurationService, IConfigurationChangeEvent } from '../../../../platform/configuration/common/configuration.js';
+import { IDisposable, dispose, toDisposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { IStorageService, IStorageValueChangeEvent, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { ISerializedEditorGroupModel, isSerializedEditorGroupModel } from '../../../common/editor/editorGroupModel.js';
+import { EditorDropTarget } from './editorDropTarget.js';
+import { Color } from '../../../../base/common/color.js';
+import { CenteredViewLayout, CenteredViewState } from '../../../../base/browser/ui/centered/centeredViewLayout.js';
+import { onUnexpectedError } from '../../../../base/common/errors.js';
+import { Parts, IWorkbenchLayoutService, Position, getFloatingEditorVerticalMargins, getFloatingEditorVerticalOuterEdges, getFloatingOuterEdgeOwners, getFloatingPaneCompositeHorizontalMargins } from '../../../services/layout/browser/layoutService.js';
+import { DeepPartial, assertType } from '../../../../base/common/types.js';
+import { CompositeDragAndDropObserver } from '../../dnd.js';
+import { DeferredPromise, Promises } from '../../../../base/common/async.js';
+import { findGroup } from '../../../services/editor/common/editorGroupFinder.js';
+import { SIDE_GROUP } from '../../../services/editor/common/editorService.js';
+import { IBoundarySashes } from '../../../../base/browser/ui/sash/sash.js';
+import { IHostService } from '../../../services/host/browser/host.js';
+import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
+import { MenuId } from '../../../../platform/actions/common/actions.js';
+import { ServiceCollection } from '../../../../platform/instantiation/common/serviceCollection.js';
+import { EditorAreaFocusContext, EditorPartMaximizedEditorGroupContext, EditorPartMultipleEditorGroupsContext, EditorTabsVisibleContext, IsTopRightEditorGroupContext } from '../../../common/contextkeys.js';
+import { mainWindow } from '../../../../base/browser/window.js';
+import { getGroupTransferVeto } from './editorTransferVeto.js';
+
+/**
+ * The width (in pixels) of each visible editor card border when the
+ * Modern UI Update experiment is enabled (`modernUI/media/editorBorder.css`).
+ * The editor reserves this thickness when laying out its contents so they sit
+ * inside the frame instead of overflowing (and being clipped by) the border.
+ * Keep in sync with the `--vscode-strokeThickness` (1px) token used there.
+ */
+const EDITOR_FRAME_BORDER_WIDTH = 1;
 
 export interface IEditorPartUIState {
 	readonly serializedGrid: ISerializedGrid;
 	readonly activeGroup: GroupIdentifier;
 	readonly mostRecentActiveGroups: GroupIdentifier[];
+}
+
+interface IEditorPartMemento {
+	'editorpart.state'?: IEditorPartUIState;
+	'editorpart.centeredview'?: CenteredViewState;
+}
+
+/**
+ * Why groups merge: a transfer the user asks for is checked before anything moves, so that all editors go into
+ * another part or none (see `EditorPart.vetoGroupTransfer`). Closing a part merges back what can go, as it always
+ * did: each editor is asked as it moves, and one that cannot go stays.
+ */
+/**
+ * The group beside which `receiver.addGroup(location, …)` adds a group: each part that is handed the location resolves it
+ * (see `EditorPart.addGroup`), until one adds the group in its own grid.
+ */
+function resolveAddGroupLocation(receiver: IEditorGroupsView, location: IEditorGroupView): IEditorGroupView {
+	for (let hops = 0; hops < 8; hops++) {
+		const resolved = receiver.getAddGroupLocation(location);
+		if (resolved.groupsView === receiver) {
+			return resolved;
+		}
+		receiver = resolved.groupsView;
+		location = resolved;
+	}
+
+	return location;
+}
+
+const enum GroupMergeReason {
+	Transfer,
+	Close
 }
 
 class GridWidgetView<T extends IView> implements IView {
@@ -62,7 +105,7 @@ class GridWidgetView<T extends IView> implements IView {
 	}
 
 	set gridWidget(grid: Grid<T> | undefined) {
-		this.element.innerText = '';
+		this.element.textContent = '';
 
 		if (grid) {
 			this.element.appendChild(grid.element);
@@ -83,7 +126,7 @@ class GridWidgetView<T extends IView> implements IView {
 	}
 }
 
-export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
+export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart, IEditorGroupsView {
 
 	private static readonly EDITOR_PART_UI_STATE_STORAGE_KEY = 'editorpart.state';
 	private static readonly EDITOR_PART_CENTERED_VIEW_STORAGE_KEY = 'editorpart.centeredview';
@@ -111,10 +154,10 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 	private readonly _onDidChangeGroupMaximized = this._register(new Emitter<boolean>());
 	readonly onDidChangeGroupMaximized = this._onDidChangeGroupMaximized.event;
 
-	private readonly _onDidActivateGroup = this._register(new Emitter<IEditorGroupView>());
+	private readonly _onDidActivateGroup = this._register(new Emitter<IEditorGroupActivationEvent>());
 	readonly onDidActivateGroup = this._onDidActivateGroup.event;
 
-	private readonly _onDidAddGroup = this._register(new Emitter<IEditorGroupView>());
+	private readonly _onDidAddGroup = this._register(new PauseableEmitter<IEditorGroupView>());
 	readonly onDidAddGroup = this._onDidAddGroup.event;
 
 	private readonly _onDidRemoveGroup = this._register(new PauseableEmitter<IEditorGroupView>());
@@ -134,6 +177,9 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 	private readonly _onDidChangeEditorPartOptions = this._register(new Emitter<IEditorPartOptionsChangeEvent>());
 	readonly onDidChangeEditorPartOptions = this._onDidChangeEditorPartOptions.event;
 
+	private readonly _onWillDispose = this._register(new Emitter<void>());
+	readonly onWillDispose = this._onWillDispose.event;
+
 	//#endregion
 
 	private readonly workspaceMemento = this.getMemento(StorageScope.WORKSPACE, StorageTarget.USER);
@@ -142,9 +188,10 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 	private readonly groupViews = new Map<GroupIdentifier, IEditorGroupView>();
 	private mostRecentActiveGroups: GroupIdentifier[] = [];
 
-	protected container: HTMLElement | undefined;
+	protected readonly container = $('.content');
 
-	private scopedInstantiationService!: IInstantiationService;
+	readonly scopedInstantiationService: IInstantiationService;
+	protected readonly scopedContextKeyService: IContextKeyService;
 
 	private centeredLayoutWidget!: CenteredViewLayout;
 
@@ -159,13 +206,20 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		readonly windowId: number,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IThemeService themeService: IThemeService,
-		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IConfigurationService protected readonly configurationService: IConfigurationService,
 		@IStorageService storageService: IStorageService,
 		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
 		@IHostService private readonly hostService: IHostService,
 		@IContextKeyService private readonly contextKeyService: IContextKeyService
 	) {
 		super(id, { hasTitle: false }, themeService, storageService, layoutService);
+
+		this.scopedContextKeyService = this._register(this.contextKeyService.createScoped(this.container));
+		this.scopedInstantiationService = this._register(this.instantiationService.createChild(new ServiceCollection(
+			[IContextKeyService, this.scopedContextKeyService]
+		)));
+
+		this._partOptions = getEditorPartOptions(this.configurationService, this.themeService);
 
 		this.registerListeners();
 	}
@@ -197,8 +251,10 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 
 	private enforcedPartOptions: DeepPartial<IEditorPartOptions>[] = [];
 
-	private _partOptions = getEditorPartOptions(this.configurationService, this.themeService);
+	private _partOptions: IEditorPartOptions;
 	get partOptions(): IEditorPartOptions { return this._partOptions; }
+
+	get supportsSplitting(): boolean { return true; }
 
 	enforcePartOptions(options: DeepPartial<IEditorPartOptions>): IDisposable {
 		this.enforcedPartOptions.push(options);
@@ -215,15 +271,52 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 	private _contentDimension!: Dimension;
 	get contentDimension(): Dimension { return this._contentDimension; }
 
+	private _contentRightInset = 0;
+
+	/**
+	 * Reserves an inset (px) on the right of the editor header and content of the group(s)
+	 * at the right edge of the editor part, while tabs stay full width, so a docked panel
+	 * can sit beside the editor under one full-width tab bar. Only the right-edge
+	 * groups (no neighbor to the right) are inset; interior groups in a split layout keep
+	 * full-width content. Recomputed when the group topology changes. `0` (default)
+	 * restores full-width content for all groups.
+	 */
+	setContentRightInset(inset: number): void {
+		this._contentRightInset = Math.max(0, Math.round(inset));
+		this.applyContentRightInset();
+	}
+
+	private applyContentRightInset(): void {
+		if (!this.gridWidget) {
+			return;
+		}
+
+		for (const group of this.groupViews.values()) {
+			if (!(group instanceof EditorGroupView)) {
+				continue;
+			}
+
+			// Only groups at the right edge of the editor part (no neighbor to the right)
+			// sit under the docked panel overlay; interior groups keep full-width content.
+			const atRightEdge = this._contentRightInset > 0 && this.gridWidget.getNeighborViews(group, Direction.Right).length === 0;
+			group.setContentRightInset(atRightEdge ? this._contentRightInset : 0);
+		}
+	}
+
 	private _activeGroup!: IEditorGroupView;
 	get activeGroup(): IEditorGroupView {
 		return this._activeGroup;
 	}
 
 	readonly sideGroup: IEditorSideGroup = {
-		openEditor: (editor, options) => {
-			const [group] = this.scopedInstantiationService.invokeFunction(accessor => findGroup(accessor, { editor, options }, SIDE_GROUP));
-
+		openEditor: async (editor, options) => {
+			const findGroupResult = this.scopedInstantiationService.invokeFunction(accessor => findGroup(accessor, { editor, options }, SIDE_GROUP));
+			let group;
+			if (findGroupResult instanceof Promise) {
+				([group] = await findGroupResult);
+			} else {
+				([group] = findGroupResult);
+			}
 			return group.openEditor(editor, options);
 		}
 	};
@@ -252,6 +345,13 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 	get hasRestorableState(): boolean {
 		return !!this.workspaceMemento[EditorPart.EDITOR_PART_UI_STATE_STORAGE_KEY];
 	}
+
+	/**
+	 * Whether the part is owned by someone else than the editor parts service:
+	 * it is not restored, not part of working sets and does not affect the
+	 * labels of other parts. Its owner is responsible for its lifecycle.
+	 */
+	get isTransient(): boolean { return false; }
 
 	private _willRestoreState = false;
 	get willRestoreState(): boolean { return this._willRestoreState; }
@@ -349,9 +449,9 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		}
 	}
 
-	activateGroup(group: IEditorGroupView | GroupIdentifier, preserveWindowOrder?: boolean): IEditorGroupView {
+	activateGroup(group: IEditorGroupView | GroupIdentifier, preserveWindowOrder?: boolean, reason?: GroupActivationReason): IEditorGroupView {
 		const groupView = this.assertGroupView(group);
-		this.doSetGroupActive(groupView);
+		this.doSetGroupActive(groupView, reason);
 
 		// Ensure window on top unless disabled
 		if (!preserveWindowOrder) {
@@ -554,8 +654,28 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		return false;
 	}
 
+	getAddGroupLocation(location: IEditorGroupView): IEditorGroupView {
+		return location;
+	}
+
+	getTransferTarget(kind: GroupTransferKind, source: IEditorGroupView | GroupIdentifier, location: IEditorGroupView): IEditorGroupView {
+		const sourceView = this.assertGroupView(source);
+		switch (kind) {
+			case GroupTransferKind.MoveGroup:
+				// Within a part, the group moves in its grid; into another part, that part adds it (see `moveGroup`)
+				return sourceView.groupsView === location.groupsView ? location : resolveAddGroupLocation(location.groupsView, location);
+			case GroupTransferKind.CopyGroup:
+				// The part of the group adds its copy (see `copyGroup`)
+				return resolveAddGroupLocation(sourceView.groupsView, location);
+			case GroupTransferKind.AddGroup:
+				return resolveAddGroupLocation(location.groupsView, location);
+			case GroupTransferKind.Merge:
+				return location;
+		}
+	}
+
 	addGroup(location: IEditorGroupView | GroupIdentifier, direction: GroupDirection, groupToCopy?: IEditorGroupView): IEditorGroupView {
-		const locationView = this.assertGroupView(location);
+		const locationView = this.getAddGroupLocation(this.assertGroupView(location));
 
 		let newGroupView: IEditorGroupView;
 
@@ -615,16 +735,26 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		}
 	}
 
+	/**
+	 * Base {@link IEditorGroupViewOptions} applied to every group this part creates.
+	 * Subclasses override to configure part-wide group behavior (e.g. header menus).
+	 */
+	protected getGroupViewOptions(): IEditorGroupViewOptions | undefined {
+		return undefined;
+	}
+
 	private doCreateGroupView(from?: IEditorGroupView | ISerializedEditorGroupModel | null, options?: IEditorGroupViewOptions): IEditorGroupView {
+
+		const resolvedOptions: IEditorGroupViewOptions | undefined = { ...this.getGroupViewOptions(), ...options };
 
 		// Create group view
 		let groupView: IEditorGroupView;
 		if (from instanceof EditorGroupView) {
-			groupView = EditorGroupView.createCopy(from, this.editorPartsView, this, this.groupsLabel, this.count, this.scopedInstantiationService, options);
+			groupView = EditorGroupView.createCopy(from, this.editorPartsView, this, this.groupsLabel, this.count, this.scopedInstantiationService, resolvedOptions);
 		} else if (isSerializedEditorGroupModel(from)) {
-			groupView = EditorGroupView.createFromSerialized(from, this.editorPartsView, this, this.groupsLabel, this.count, this.scopedInstantiationService, options);
+			groupView = EditorGroupView.createFromSerialized(from, this.editorPartsView, this, this.groupsLabel, this.count, this.scopedInstantiationService, resolvedOptions);
 		} else {
-			groupView = EditorGroupView.createNew(this.editorPartsView, this, this.groupsLabel, this.count, this.scopedInstantiationService, options);
+			groupView = EditorGroupView.createNew(this.editorPartsView, this, this.groupsLabel, this.count, this.scopedInstantiationService, resolvedOptions);
 		}
 
 		// Keep in map
@@ -668,7 +798,7 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		return groupView;
 	}
 
-	private doSetGroupActive(group: IEditorGroupView): void {
+	private doSetGroupActive(group: IEditorGroupView, reason = GroupActivationReason.DEFAULT): void {
 		if (this._activeGroup !== group) {
 			const previousActiveGroup = this._activeGroup;
 			this._activeGroup = group;
@@ -694,7 +824,7 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		// Always fire the event that a group has been activated
 		// even if its the same group that is already active to
 		// signal the intent even when nothing has changed.
-		this._onDidActivateGroup.fire(group);
+		this._onDidActivateGroup.fire({ group, reason });
 	}
 
 	private doRestoreGroup(group: IEditorGroupView): void {
@@ -702,11 +832,11 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 			return; // method is called as part of state restore very early
 		}
 
-		if (this.hasMaximizedGroup() && !this.isGroupMaximized(group)) {
-			this.unmaximizeGroup();
-		}
-
 		try {
+			if (this.hasMaximizedGroup() && !this.isGroupMaximized(group)) {
+				this.unmaximizeGroup();
+			}
+
 			const viewSize = this.gridWidget.getViewSize(group);
 			if (viewSize.width === group.minimumWidth || viewSize.height === group.minimumHeight) {
 				this.arrangeGroups(GroupsArrangement.EXPAND, group);
@@ -810,12 +940,37 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		this._onDidRemoveGroup.fire(groupView);
 	}
 
+	/**
+	 * Whether a transfer of the editors of `sources` into `target` is vetoed, such as by an editor that cannot leave its
+	 * window (see `EditorInput.canMove`), telling the user why when it is. Only transfers into another part are
+	 * checked, before anything changes; within a part, editors move one by one as before.
+	 */
+	protected vetoGroupTransfer(sources: readonly IEditorGroupView[], target: IEditorGroupView, copy: boolean): boolean {
+		for (const source of sources) {
+			if (source === target || source.groupsView === target.groupsView) {
+				continue;
+			}
+			const veto = getGroupTransferVeto(source, target.id, { copy });
+			if (veto) {
+				this.editorPartsView.showTransferVeto(veto);
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	moveGroup(group: IEditorGroupView | GroupIdentifier, location: IEditorGroupView | GroupIdentifier, direction: GroupDirection): IEditorGroupView {
 		const sourceView = this.assertGroupView(group);
 		const targetView = this.assertGroupView(location);
 
 		if (sourceView.id === targetView.id) {
 			throw new Error('Cannot move group into its own');
+		}
+
+		// Into another part, unless an editor cannot go: then the group stays, and nothing changes
+		if (this.vetoGroupTransfer([sourceView], this.getTransferTarget(GroupTransferKind.MoveGroup, sourceView, targetView), false)) {
+			return sourceView;
 		}
 
 		const restoreFocus = this.shouldRestoreFocus(sourceView.element);
@@ -830,8 +985,10 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		// Different groups view: move via groups view API
 		else {
 			movedView = targetView.groupsView.addGroup(targetView, direction, sourceView);
-			sourceView.closeAllEditors();
-			this.removeGroup(sourceView, restoreFocus);
+			sourceView.closeAllEditors({ excludeConfirming: true, force: true });
+			if (!sourceView.disposed /* could have been removed already by closing its last editor via the `workbench.editor.closeEmptyGroups` setting */) {
+				this.removeGroup(sourceView, restoreFocus);
+			}
 		}
 
 		// Restore focus if we had it previously after completing the grid
@@ -854,6 +1011,11 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		const groupView = this.assertGroupView(group);
 		const locationView = this.assertGroupView(location);
 
+		// Into another part, the copy shares the editors of the group (its model is cloned), so all are asked, as for a move
+		if (this.vetoGroupTransfer([groupView], this.getTransferTarget(GroupTransferKind.CopyGroup, groupView, locationView), false)) {
+			return groupView;
+		}
+
 		const restoreFocus = this.shouldRestoreFocus(groupView.element);
 
 		// Copy the group view
@@ -868,20 +1030,50 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 	}
 
 	mergeGroup(group: IEditorGroupView | GroupIdentifier, target: IEditorGroupView | GroupIdentifier, options?: IMergeGroupOptions): boolean {
+		return this.doMergeGroup(group, target, options, GroupMergeReason.Transfer);
+	}
+
+	private doMergeGroup(group: IEditorGroupView | GroupIdentifier, target: IEditorGroupView | GroupIdentifier, options: IMergeGroupOptions | undefined, reason: GroupMergeReason): boolean {
 		const sourceView = this.assertGroupView(group);
 		const targetView = this.assertGroupView(target);
+
+		// Into another part all editors go, or none
+		if (reason === GroupMergeReason.Transfer && this.vetoGroupTransfer([sourceView], targetView, options?.mode === MergeGroupMode.COPY_EDITORS)) {
+			return false;
+		}
 
 		// Collect editors to move/copy
 		const editors: EditorInputWithOptions[] = [];
 		let index = (options && typeof options.index === 'number') ? options.index : targetView.count;
 		for (const editor of sourceView.editors) {
 			const inactive = !sourceView.isActive(editor) || this._activeGroup !== sourceView;
-			const sticky = sourceView.isSticky(editor);
-			const options = { index: !sticky ? index : undefined /* do not set index to preserve sticky flag */, inactive, preserveFocus: inactive };
 
-			editors.push({ editor, options });
+			let actualIndex: number | undefined;
+			if (targetView.contains(editor) &&
+				(
+					// Do not configure an `index` for editors that are sticky in
+					// the target, otherwise there is a chance of losing that state
+					// when the editor is moved.
+					// See https://github.com/microsoft/vscode/issues/239549
+					targetView.isSticky(editor) ||
+					// Do not configure an `index` when we are explicitly instructed
+					options?.preserveExistingIndex
+				)
+			) {
+				// leave `index` as `undefined`
+			} else {
+				actualIndex = index;
+				index++;
+			}
 
-			index++;
+			editors.push({
+				editor,
+				options: {
+					index: actualIndex,
+					inactive,
+					preserveFocus: inactive || options?.preserveFocus
+				}
+			});
 		}
 
 		// Move/Copy editors over into target
@@ -900,8 +1092,17 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		return result;
 	}
 
-	mergeAllGroups(target: IEditorGroupView | GroupIdentifier): boolean {
+	mergeAllGroups(target: IEditorGroupView | GroupIdentifier, options?: IMergeGroupOptions): boolean {
+		return this.doMergeAllGroups(target, options, GroupMergeReason.Transfer);
+	}
+
+	private doMergeAllGroups(target: IEditorGroupView | GroupIdentifier, options: IMergeGroupOptions | undefined, reason: GroupMergeReason): boolean {
 		const targetView = this.assertGroupView(target);
+
+		// Into another part all groups go, or none: a group merged last must not stop after others went
+		if (reason === GroupMergeReason.Transfer && this.vetoGroupTransfer(this.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE), targetView, options?.mode === MergeGroupMode.COPY_EDITORS)) {
+			return false;
+		}
 
 		let result = true;
 		for (const group of this.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE)) {
@@ -909,10 +1110,51 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 				continue; // keep target
 			}
 
-			const merged = this.mergeGroup(group, targetView);
+			const merged = this.doMergeGroup(group, targetView, options, reason);
 			if (!merged) {
 				result = false;
 			}
+		}
+
+		return result;
+	}
+
+	/**
+	 * Merges all editors of this part into the most recently active
+	 * unlocked group of `targetPart` (by default, the main part),
+	 * without changing the editors that are already there.
+	 *
+	 * This is for closing the part, which merges back what can go without
+	 * the check of explicit transfers: each editor is still asked as it
+	 * moves (see `EditorInput.canMove`), and one that cannot go stays.
+	 */
+	protected mergeGroupsToMainPart(targetPart: IEditorGroupsView = this.editorPartsView.mainPart, options?: { preserveFocus?: boolean }): boolean {
+		if (!this.groups.some(group => group.count > 0)) {
+			return true; // skip if we have no editors opened
+		}
+
+		// Find the most recent group that is not locked
+		let targetGroup: IEditorGroupView | undefined = undefined;
+		for (const group of targetPart.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE)) {
+			if (!group.isLocked) {
+				targetGroup = group;
+				break;
+			}
+		}
+
+		if (!targetGroup) {
+			targetGroup = targetPart.addGroup(targetPart.activeGroup, this.partOptions.openSideBySideDirection === 'right' ? GroupDirection.RIGHT : GroupDirection.DOWN);
+		}
+
+		const result = this.doMergeAllGroups(targetGroup, {
+			// Try to reduce the impact of closing this part
+			// as much as possible by not changing existing
+			// editors in the main part.
+			preserveExistingIndex: true,
+			preserveFocus: options?.preserveFocus
+		}, GroupMergeReason.Close);
+		if (!options?.preserveFocus) {
+			targetGroup.focus();
 		}
 
 		return result;
@@ -936,7 +1178,7 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 	createEditorDropTarget(container: unknown, delegate: IEditorDropTargetDelegate): IDisposable {
 		assertType(isHTMLElement(container));
 
-		return this.scopedInstantiationService.createInstance(EditorDropTarget, container, delegate);
+		return this.scopedInstantiationService.createInstance(EditorDropTarget, this, container, delegate);
 	}
 
 	//#region Part
@@ -957,8 +1199,7 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 	}
 
 	override updateStyles(): void {
-		const container = assertIsDefined(this.container);
-		container.style.backgroundColor = this.getColor(editorBackground) || '';
+		this.container.style.backgroundColor = this.getColor(editorBackground) || '';
 
 		const separatorBorderStyle = { separatorBorder: this.gridSeparatorBorder, background: this.theme.getColor(EDITOR_PANE_BACKGROUND) || Color.transparent };
 		this.gridWidget.style(separatorBorderStyle);
@@ -969,18 +1210,13 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 
 		// Container
 		this.element = parent;
-		this.container = document.createElement('div');
-		this.container.classList.add('content');
+		const updateEditorTabsClass = () => parent.classList.toggle('editor-tabs-multiple', this.partOptions.showTabs === 'multiple');
+		updateEditorTabsClass();
+		this._register(this.onDidChangeEditorPartOptions(updateEditorTabsClass));
 		if (this.windowId !== mainWindow.vscodeWindowId) {
 			this.container.classList.add('auxiliary');
 		}
 		parent.appendChild(this.container);
-
-		// Scoped instantiation service
-		const scopedContextKeyService = this._register(this.contextKeyService.createScoped(this.container));
-		this.scopedInstantiationService = this._register(this.instantiationService.createChild(new ServiceCollection(
-			[IContextKeyService, scopedContextKeyService]
-		)));
 
 		// Grid control
 		this._willRestoreState = !options || options.restorePreviousState;
@@ -994,7 +1230,7 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		this.setupDragAndDropSupport(parent, this.container);
 
 		// Context keys
-		this.handleContextKeys(scopedContextKeyService);
+		this.handleContextKeys();
 
 		// Signal ready
 		this.whenReadyPromise.complete();
@@ -1008,12 +1244,16 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		return this.container;
 	}
 
-	private handleContextKeys(contextKeyService: IContextKeyService): void {
-		const isAuxiliaryEditorPartContext = IsAuxiliaryEditorPartContext.bindTo(contextKeyService);
-		isAuxiliaryEditorPartContext.set(this.windowId !== mainWindow.vscodeWindowId);
+	protected handleContextKeys(): void {
+		// Bind `editorAreaFocus` to the editor part's scoped context key service so
+		// it evaluates to `true` only when keyboard focus is within the editor area.
+		// Applies to all editor parts (main, modal, auxiliary) so callers can gate
+		// shortcuts on focus being in any editor area regardless of which part.
+		EditorAreaFocusContext.bindTo(this.scopedContextKeyService).set(true);
 
-		const multipleEditorGroupsContext = EditorPartMultipleEditorGroupsContext.bindTo(contextKeyService);
-		const maximizedEditorGroupContext = EditorPartMaximizedEditorGroupContext.bindTo(contextKeyService);
+		const multipleEditorGroupsContext = EditorPartMultipleEditorGroupsContext.bindTo(this.scopedContextKeyService);
+		const maximizedEditorGroupContext = EditorPartMaximizedEditorGroupContext.bindTo(this.scopedContextKeyService);
+		const editorTabsVisibleContext = EditorTabsVisibleContext.bindTo(this.scopedContextKeyService);
 
 		const updateContextKeys = () => {
 			const groupCount = this.count;
@@ -1030,11 +1270,56 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 			}
 		};
 
-		updateContextKeys();
+		const updateEditorTabsVisibleContext = () => {
+			editorTabsVisibleContext.set(this.partOptions.showTabs === 'multiple');
+		};
 
-		this._register(this.onDidAddGroup(() => updateContextKeys()));
-		this._register(this.onDidRemoveGroup(() => updateContextKeys()));
-		this._register(this.onDidChangeGroupMaximized(() => updateContextKeys()));
+		const updateTopRightGroupContextKey = () => {
+			if (!this.gridWidget || !this._contentDimension) {
+				return;
+			}
+
+			let topRightGroup: IEditorGroupView | undefined;
+			for (const group of this.groups) {
+				if (
+					this.gridWidget.getNeighborViews(group, Direction.Up).length === 0 &&
+					this.gridWidget.getNeighborViews(group, Direction.Right).length === 0
+				) {
+					topRightGroup = group;
+					break;
+				}
+			}
+
+			for (const group of this.groups) {
+				const contextKey = this.editorPartsView.bind(IsTopRightEditorGroupContext, group);
+				contextKey.set(group === topRightGroup);
+			}
+		};
+
+		updateContextKeys();
+		updateEditorTabsVisibleContext();
+		updateTopRightGroupContextKey();
+
+		this._register(this.onDidAddGroup(() => {
+			updateContextKeys();
+			updateTopRightGroupContextKey();
+			this.applyContentRightInset();
+		}));
+		this._register(this.onDidRemoveGroup(() => {
+			updateContextKeys();
+			updateTopRightGroupContextKey();
+			this.applyContentRightInset();
+		}));
+		this._register(this.onDidChangeGroupMaximized(() => {
+			updateContextKeys();
+			this.applyContentRightInset();
+		}));
+		this._register(this.onDidChangeEditorPartOptions(() => updateEditorTabsVisibleContext()));
+		this._register(this.onDidMoveGroup(() => {
+			updateTopRightGroupContextKey();
+			this.applyContentRightInset();
+		}));
+		this._register(this.onDidLayout(() => updateTopRightGroupContextKey()));
 	}
 
 	private setupDragAndDropSupport(parent: HTMLElement, container: HTMLElement): void {
@@ -1043,8 +1328,7 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		this._register(this.createEditorDropTarget(container, Object.create(null)));
 
 		// No drop in the editor
-		const overlay = document.createElement('div');
-		overlay.classList.add('drop-block-overlay');
+		const overlay = $('.drop-block-overlay');
 		parent.appendChild(overlay);
 
 		// Hide the block if a mouse down event occurs #99065
@@ -1055,8 +1339,8 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 			onDragEnd: e => overlay.classList.remove('visible')
 		}));
 
-		let horizontalOpenerTimeout: any;
-		let verticalOpenerTimeout: any;
+		let horizontalOpenerTimeout: Timeout | undefined;
+		let verticalOpenerTimeout: Timeout | undefined;
 		let lastOpenHorizontalPosition: Position | undefined;
 		let lastOpenVerticalPosition: Position | undefined;
 		const openPartAtPosition = (position: Position) => {
@@ -1103,6 +1387,10 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 					openVerticalPosition = Position.BOTTOM;
 				}
 
+				if (e.eventData.clientY < boundingRect.top + proximity) {
+					openVerticalPosition = Position.TOP;
+				}
+
 				if (horizontalOpenerTimeout && openHorizontalPosition !== lastOpenHorizontalPosition) {
 					clearTimeout(horizontalOpenerTimeout);
 					horizontalOpenerTimeout = undefined;
@@ -1127,12 +1415,13 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 			onDragEnd: () => clearAllTimeouts(),
 			onDrop: () => clearAllTimeouts()
 		}));
+
+		// Make sure pending opener timeouts are cleared when the part is disposed
+		this._register(toDisposable(() => clearAllTimeouts()));
 	}
 
 	centerLayout(active: boolean): void {
 		this.centeredLayoutWidget.activate(active);
-
-		this._activeGroup.focus();
 	}
 
 	isLayoutCentered(): boolean {
@@ -1256,14 +1545,11 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		this.gridWidgetDisposables.clear();
 		this.gridWidgetDisposables.add(gridWidget.onDidChangeViewMaximized(maximized => this._onDidChangeGroupMaximized.fire(maximized)));
 
-		this._onDidChangeGroupMaximized.fire(this.hasMaximizedGroup());
-
 		this.onDidSetGridWidget.fire(undefined);
 	}
 
 	private updateContainer(): void {
-		const container = assertIsDefined(this.container);
-		container.classList.toggle('empty', this.isEmpty);
+		this.container.classList.toggle('empty', this.isEmpty);
 	}
 
 	private notifyGroupIndexChange(): void {
@@ -1285,9 +1571,49 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		this.centeredLayoutWidget.boundarySashes = sashes;
 	}
 
+	protected getFloatingBorderWidth(): number {
+		return computeScreenAwareSize(mainWindow, EDITOR_FRAME_BORDER_WIDTH);
+	}
+
 	override layout(width: number, height: number, top: number, left: number): void {
 		this.top = top;
 		this.left = left;
+
+		// When the floating panels experiment is enabled, reserve a margin around the
+		// main editor so it floats like the side bar and panel cards.
+		if (this === this.editorPartsView.mainPart && this.layoutService.isFloatingPanelsEnabled()) {
+
+			// When the editor becomes the outermost card on a side (no floating part
+			// sits between it and the window edge) it adopts the same doubled gutter the
+			// side/aux bars use, so its contents do not hug the window edge. The matching
+			// margins are applied in CSS via the toggled classes below.
+			const owners = getFloatingOuterEdgeOwners(this.layoutService);
+			const outerLeft = owners.left === Parts.EDITOR_PART;
+			const outerRight = owners.right === Parts.EDITOR_PART;
+			const verticalOuterEdges = getFloatingEditorVerticalOuterEdges(this.layoutService);
+
+			const { left: leftMargin, right: rightMargin } = getFloatingPaneCompositeHorizontalMargins(this.layoutService, Parts.EDITOR_PART);
+
+			width = Math.max(0, width - leftMargin - rightMargin);
+			const { top, bottom } = getFloatingEditorVerticalMargins(this.layoutService, mainWindow);
+			// Fill the grid cell after margins so fractional-scale rounding cannot widen vertical gaps.
+			this.element.style.height = `calc(100% - ${top + bottom}px)`;
+			height = Math.max(0, height - top - bottom);
+
+			// Reserve space for the Modern UI editor border (modernUI/media/editorBorder.css) so content doesn't get clipped.
+			const borderWidth = this.getFloatingBorderWidth();
+			const leftBorderWidth = this.layoutService.isModernUICompact() && !outerLeft ? 0 : borderWidth;
+			width = Math.max(0, width - (leftBorderWidth + borderWidth));
+			height = Math.max(0, height - borderWidth * 2);
+
+			this.element.classList.toggle('floating-editor-outer-left', outerLeft);
+			this.element.classList.toggle('floating-editor-outer-right', outerRight);
+			this.element.classList.toggle('floating-editor-outer-top', verticalOuterEdges.top);
+			this.element.classList.toggle('floating-editor-outer-bottom', verticalOuterEdges.bottom);
+		} else {
+			this.element.style.height = '';
+			this.element.classList.remove('floating-editor-outer-left', 'floating-editor-outer-right', 'floating-editor-outer-top', 'floating-editor-outer-bottom');
+		}
 
 		// Layout contents
 		const contentAreaSize = super.layoutContents(width, height).contentSize;
@@ -1352,7 +1678,17 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 
 	private async doApplyState(state: IEditorPartUIState, options?: IEditorGroupViewOptions): Promise<void> {
 		const groups = await this.doPrepareApplyState();
-		const resumeEvents = this.disposeGroups(true /* suspress events for the duration of applying state */);
+
+		// Pause add/remove events for groups during the duration of applying the state
+		// This ensures that we can do this transition atomically with the new state
+		// being ready when the events are fired. This is important because usually there
+		// is never the state where no groups are present, but for this transition we
+		// need to temporarily dispose all groups to restore the new set.
+
+		this._onDidAddGroup.pause();
+		this._onDidRemoveGroup.pause();
+
+		this.disposeGroups();
 
 		// MRU
 		this.mostRecentActiveGroups = state.mostRecentActiveGroups;
@@ -1361,7 +1697,12 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		try {
 			this.doApplyGridState(state.serializedGrid, state.activeGroup, undefined, options);
 		} finally {
-			resumeEvents();
+			// It is very important to keep this order: first resume the events for
+			// removed groups and then for added groups. Many listeners may store
+			// groups in sets by their identifier and groups can have the same
+			// identifier before and after.
+			this._onDidRemoveGroup.resume();
+			this._onDidAddGroup.resume();
 		}
 
 		// Restore editors that were not closed before and are now opened now
@@ -1390,7 +1731,7 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 
 		const groups = this.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE);
 		for (const group of groups) {
-			await group.closeAllEditors({ excludeConfirming: true });
+			await group.closeAllEditors({ excludeConfirming: true, force: true });
 		}
 
 		return groups;
@@ -1401,8 +1742,16 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		// Recreate grid widget from state
 		this.doCreateGridControlWithState(gridState, activeGroupId, editorGroupViewsToReuse, options);
 
-		// Layout
-		this.doLayout(this._contentDimension);
+		// Layout, but only if the part has already been laid out at least once.
+		// When restoring a working set into an editor part that has never been
+		// shown (e.g. on reload with the editor area hidden), `_contentDimension`
+		// is still undefined; laying out here would throw and abort before the
+		// `onDidAddGroup` events below are fired (leaving the restored groups
+		// unregistered with the editor service). The grid is laid out later when
+		// the part is first shown.
+		if (this._contentDimension) {
+			this.doLayout(this._contentDimension);
+		}
 
 		// Update container
 		this.updateContainer();
@@ -1435,13 +1784,7 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 		};
 	}
 
-	private disposeGroups(): void;
-	private disposeGroups(surpressEvents: boolean): Function;
-	private disposeGroups(surpressEvents?: boolean): Function | void {
-		if (surpressEvents) {
-			this._onDidRemoveGroup.pause();
-		}
-
+	private disposeGroups(): void {
 		for (const group of this.groups) {
 			group.dispose();
 
@@ -1450,13 +1793,12 @@ export class EditorPart extends Part implements IEditorPart, IEditorGroupsView {
 
 		this.groupViews.clear();
 		this.mostRecentActiveGroups = [];
-
-		if (surpressEvents) {
-			return () => this._onDidRemoveGroup.resume();
-		}
 	}
 
 	override dispose(): void {
+
+		// Event
+		this._onWillDispose.fire();
 
 		// Forward to all groups
 		this.disposeGroups();
@@ -1483,5 +1825,10 @@ export class MainEditorPart extends EditorPart {
 		@IContextKeyService contextKeyService: IContextKeyService
 	) {
 		super(editorPartsView, Parts.EDITOR_PART, '', mainWindow.vscodeWindowId, instantiationService, themeService, configurationService, storageService, layoutService, hostService, contextKeyService);
+	}
+
+	// The new tab button shows while its menu has entries, which the `workbench.editor.newTabButton` setting controls.
+	protected override getGroupViewOptions(): IEditorGroupViewOptions | undefined {
+		return { menuIds: { tabsBarAddTab: MenuId.EditorTabsBarAddTab } };
 	}
 }
